@@ -1,0 +1,154 @@
+﻿unit BackgroundLayerUnit;
+
+interface
+
+uses
+  System.Classes, System.SysUtils, System.Types,
+  FMX.Types, FMX.Controls, FMX.Objects, FMX.Graphics;
+
+type
+  TBackgroundLayer = class
+  private
+    // two images are used so the background can loop endlessly
+    // while one image moves out of the screen, the second one is already next to it
+    d_images: array[0..1] of TImage;
+
+    // this controls how fast this layer moves compared to the player
+    // lower values feel further away, higher values feel closer to the camera
+    d_speedFactor: Single;
+
+    // cached size of the game area so the background always fills the whole screen
+    d_width: Single;
+    d_height: Single;
+
+    // current horizontal offset of this layer
+    // this is what creates the scrolling effect
+    d_offsetX: Single;
+    procedure ApplyLayout;
+  public
+    constructor Create(AParent: TFmxObject; const ABitmap: TBitmap; ASpeed: Single);
+    procedure Update(const ADeltaTime: Single; PlayerVelocity: Single);
+    procedure Resize(const AWidth, AHeight: Single);
+    procedure ResetPosition;
+    procedure SendToBack;
+    procedure BringToFront;
+  end;
+
+implementation
+
+constructor TBackgroundLayer.Create(AParent: TFmxObject; const ABitmap: TBitmap; ASpeed: Single);
+var
+  i: Integer;
+begin
+  // save how strongly this layer reacts to movement
+  // this is the core of the parallax effect
+  d_speedFactor := ASpeed;
+
+  // start with no horizontal scroll
+  d_offsetX := 0;
+
+  for i := 0 to 1 do
+  begin
+    // create two images for seamless scrolling
+    d_images[i] := TImage.Create(AParent);
+    d_images[i].Parent := AParent;
+
+    // copy the bitmap into each image
+    d_images[i].Bitmap.Assign(ABitmap);
+
+    // stretch makes the background fill the game area nicely
+    d_images[i].WrapMode := TImageWrapMode.Stretch;
+
+    // background should never block clicks or touches
+    d_images[i].HitTest := False;
+
+    // do not store these runtime created images in the form
+    d_images[i].Stored := False;
+
+    // keep backgrounds aligned to the top
+    d_images[i].Position.Y := 0;
+  end;
+end;
+
+procedure TBackgroundLayer.Resize(const AWidth, AHeight: Single);
+begin
+  // remember the current game area size
+  d_width := AWidth;
+  d_height := AHeight;
+
+  // reapply positions and size so the layer stays responsive
+  ApplyLayout;
+end;
+
+procedure TBackgroundLayer.ResetPosition;
+begin
+  // go back to the original scroll position
+  d_offsetX := 0;
+
+  // update the two images so the reset is visible immediately
+  ApplyLayout;
+end;
+
+procedure TBackgroundLayer.ApplyLayout;
+begin
+  // safety check so we do not place images with invalid size
+  if d_width <= 0 then
+    Exit;
+
+  // first image starts at the current offset
+  d_images[0].Width := d_width;
+  d_images[0].Height := d_height;
+  d_images[0].Position.X := d_offsetX;
+  d_images[0].Position.Y := 0;
+
+  // second image is placed exactly to the right of the first one
+  // this is why the background can keep scrolling without gaps
+  d_images[1].Width := d_width;
+  d_images[1].Height := d_height;
+  d_images[1].Position.X := d_offsetX + d_width;
+  d_images[1].Position.Y := 0;
+end;
+
+procedure TBackgroundLayer.Update(const ADeltaTime: Single; PlayerVelocity: Single);
+var
+  move: Single;
+begin
+  // if the layer has no size yet there is nothing useful to update
+  if d_width <= 0 then
+    Exit;
+
+  // calculate how much this layer should move this frame
+  // player velocity drives the world feeling, speed factor makes far layers move slower
+  move := PlayerVelocity * d_speedFactor * ADeltaTime;
+
+  // move the whole layer left or right
+  d_offsetX := d_offsetX - move;
+
+  // when the first image has fully moved out of view,
+  // wrap the offset so the second image becomes the visible one
+  while d_offsetX <= -d_width do
+    d_offsetX := d_offsetX + d_width;
+
+  // this also suports scrolling back in the other direction
+  while d_offsetX >= 0 do
+    d_offsetX := d_offsetX - d_width;
+
+  // apply the new positions to both images
+  ApplyLayout;
+end;
+
+procedure TBackgroundLayer.SendToBack;
+begin
+  // send both images behind everything else
+  d_images[0].SendToBack;
+  d_images[1].SendToBack;
+end;
+
+procedure TBackgroundLayer.BringToFront;
+begin
+  // bring both images above other controls
+  d_images[0].BringToFront;
+  d_images[1].BringToFront;
+end;
+
+end.

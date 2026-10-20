@@ -1,0 +1,150 @@
+unit frameLobby;
+
+interface
+
+uses
+  System.SysUtils, System.Types, System.UITypes, System.Classes, System.Variants,
+  System.Generics.Collections,
+  FMX.Types, FMX.Graphics, FMX.Controls, FMX.Forms, FMX.Dialogs, FMX.StdCtrls,
+  FMX.Objects, FMX.Layouts, FMX.ListBox;
+
+type
+  TFrame2 = class(TFrame)
+  private
+    rectBackground: TRectangle;
+    rectCard: TRectangle;
+    lblTitle: TLabel;
+    lblSession: TLabel;
+    lblPlayerName: TLabel;
+    lblPlayersName: TLabel;
+    lstPlayers: TListBox;
+
+    procedure BuildUi;
+
+  public
+    constructor Create(AOwner: TComponent); override;
+    procedure SetLobbyData(const ASessionName: string; const APlayerName: string; const APlayers: TList<string>);
+  end;
+
+implementation
+
+{$R *.fmx}
+
+constructor TFrame2.Create(AOwner: TComponent);
+begin
+  inherited;
+  BuildUi;
+end;
+
+procedure TFrame2.BuildUi;
+var
+  mainLayout: TLayout;
+begin
+  // background with adventure colors
+  rectBackground := TRectangle.Create(Self);
+  rectBackground.Parent := Self;
+  rectBackground.Align := TAlignLayout.Contents;
+  rectBackground.Fill.Color := $FF123524;
+  rectBackground.Stroke.Kind := TBrushKind.None;
+  rectBackground.HitTest := False;
+
+  mainLayout := TLayout.Create(Self);
+  mainLayout.Parent := Self;
+  mainLayout.Align := TAlignLayout.Center;
+  mainLayout.Width := 680;
+  mainLayout.Height := 560;
+  mainLayout.Margins.Left := 24;
+  mainLayout.Margins.Right := 24;
+
+  rectCard := TRectangle.Create(Self);
+  rectCard.Parent := mainLayout;
+  rectCard.Align := TAlignLayout.Contents;
+  rectCard.XRadius := 26;
+  rectCard.YRadius := 26;
+  rectCard.Fill.Color := $FF276749;
+  rectCard.Stroke.Color := $FFFFB703;
+  rectCard.Stroke.Thickness := 4;
+
+  lblTitle := TLabel.Create(Self);
+  lblTitle.Parent := mainLayout;
+  lblTitle.Align := TAlignLayout.Top;
+  lblTitle.Height := 86;
+  lblTitle.Text := 'lobby';
+  lblTitle.TextSettings.Font.Size := 42;
+  lblTitle.TextSettings.Font.Style := [TFontStyle.fsBold];
+  lblTitle.TextSettings.FontColor := $FFFFE066;
+  lblTitle.TextSettings.HorzAlign := TTextAlign.Center;
+  lblTitle.TextSettings.VertAlign := TTextAlign.Center;
+
+  lblSession := TLabel.Create(Self);
+  lblSession.Parent := mainLayout;
+  lblSession.Align := TAlignLayout.Top;
+  lblSession.Height := 44;
+  lblSession.Margins.Left := 42;
+  lblSession.Margins.Right := 42;
+  lblSession.Text := 'session: waiting';
+  lblSession.TextSettings.Font.Size := 18;
+  lblSession.TextSettings.Font.Style := [TFontStyle.fsBold];
+  lblSession.TextSettings.FontColor := $FFFFFFFF;
+
+  lblPlayerName := TLabel.Create(Self);
+  lblPlayerName.Parent := mainLayout;
+  lblPlayerName.Align := TAlignLayout.Top;
+  lblPlayerName.Height := 40;
+  lblPlayerName.Margins.Left := 42;
+  lblPlayerName.Margins.Right := 42;
+  lblPlayerName.Text := 'you: player';
+  lblPlayerName.TextSettings.Font.Size := 18;
+  lblPlayerName.TextSettings.FontColor := $FFFFFFFF;
+
+  lblPlayersName := TLabel.Create(Self);
+  lblPlayersName.Parent := mainLayout;
+  lblPlayersName.Align := TAlignLayout.Top;
+  lblPlayersName.Height := 48;
+  lblPlayersName.Text := 'players in this session';
+  lblPlayersName.TextSettings.Font.Size := 22;
+  lblPlayersName.TextSettings.Font.Style := [TFontStyle.fsBold];
+  lblPlayersName.TextSettings.FontColor := $FFFFF3B0;
+  lblPlayersName.TextSettings.HorzAlign := TTextAlign.Center;
+
+  lstPlayers := TListBox.Create(Self);
+  lstPlayers.Parent := mainLayout;
+  lstPlayers.Align := TAlignLayout.Client;
+  lstPlayers.Margins.Left := 42;
+  lstPlayers.Margins.Right := 42;
+  lstPlayers.Margins.Bottom := 34;
+  lstPlayers.ItemHeight := 54;
+end;
+
+procedure TFrame2.SetLobbyData(const ASessionName: string; const APlayerName: string; const APlayers: TList<string>);
+var
+  player: string;
+  item: TListBoxItem;
+  lbl: TLabel;
+begin
+  // update lobby text
+  lblSession.Text := 'session: ' + ASessionName;
+  lblPlayerName.Text := 'you: ' + APlayerName;
+
+  // rebuild player list
+  lstPlayers.Clear;
+
+  for player in APlayers do
+  begin
+    item := TListBoxItem.Create(lstPlayers);
+    item.Parent := lstPlayers;
+    item.Height := 54;
+
+    lbl := TLabel.Create(item);
+    lbl.Parent := item;
+    lbl.Align := TAlignLayout.Client;
+    lbl.Margins.Left := 18;
+    lbl.Text := player;
+    lbl.TextSettings.Font.Size := 18;
+    lbl.TextSettings.Font.Style := [TFontStyle.fsBold];
+    lbl.TextSettings.FontColor := $FFFFFFFF;
+    lbl.TextSettings.VertAlign := TTextAlign.Center;
+  end;
+end;
+
+end.

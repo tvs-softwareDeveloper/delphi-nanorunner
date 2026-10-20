@@ -1,0 +1,1300 @@
+﻿unit frmMainUnit;
+
+interface
+
+uses
+  System.SysUtils, System.Types, System.UITypes, System.Classes, System.Variants,
+  System.IniFiles,
+  FMX.Types, FMX.Controls, FMX.Forms, FMX.Graphics, FMX.Dialogs, FMX.Menus,
+  FMX.Controls.Presentation, FMX.StdCtrls, FMX.TabControl, frameGame, GameEngine,
+  FMX.Objects, FMX.Layouts, InputStateUnit, Winapi.Windows, Winapi.Messages,
+  FMX.Platform.Win, FMX.Edit, FMX.ListBox, System.Math, GameServerUnit, ErrorHandlerUnit, UIScreenUnit;
+
+type
+  TfrmMain = class(TForm)
+    tcContent: TTabControl;
+    Panel1: TPanel;
+    MainMenu1: TMainMenu;
+    mnuFile: TMenuItem;
+    mnuOpen: TMenuItem;
+    tabHome: TTabItem;
+    tabGame: TTabItem;
+    btnStartAndLeave: TButton;
+    tmrGameLoop: TTimer;
+    layGameContainer: TFrame1;
+    TabLobby: TTabItem;
+    procedure btnThemeJapaneseClick(Sender: TObject);
+    procedure btnThemeMoonlandingClick(Sender: TObject);
+    procedure btnRestartClick(Sender: TObject);
+    procedure FormCreate(Sender: TObject);
+    procedure btnStartAndLeaveClick(Sender: TObject);
+    procedure tcContentChange(Sender: TObject);
+    procedure tmrGameLoopTimer(Sender: TObject);
+    procedure FormResize(Sender: TObject);
+
+  private
+
+    d_homeScreen: THomeScreen;
+    d_lobbyScreen: TLobbyScreen;
+    d_lastFrameTime: Int64;
+    d_multiplayerActive: Boolean;
+    d_playerScores: TStringList;
+    d_localScore: Single;
+
+    d_gameEngine: TGameEngine;
+    d_onRestart: TProc;
+    d_input: TInputState;
+    d_sendStateTimer: Single;
+
+    lblScore: TLabel;
+    lblGameOver: TLabel;
+
+    btnRestart: TButton;
+//    btnThemeJapanese: TButton;
+//    btnThemeMoonlanding: TButton;
+
+//    rectHomeBackground: TRectangle;
+//    rectHomeCard: TRectangle;
+//    rectLobbyBackground: TRectangle;
+//    rectLobbyCard: TRectangle;
+
+//    edtPlayerName: TEdit;
+
+ //   chkMultiplayer: TCheckBox;
+
+ //   lstSession: TListBox;
+ //   lstLobbyPlayer: TListBox;
+
+//    lblLobbyTitle: TLabel;
+//    lblPlayerName: TLabel;
+//    lblSessions: TLabel;
+//    lblLobbyPlayers: TLabel;
+//    btnBackToHome: TButton;
+
+    d_isHost: Boolean;// so i can check who s host and who s client.
+
+    // this is the name from the input field
+    // it is also sent to the multiplayer server
+    d_playerName: string;
+
+    // this server is started by the first game window
+    // if a second window opens, this server can fail to start because the port is already used
+    // that is ok because the second window only needs to connect as a client
+    d_server: TSimpleGameServer;
+
+    // this client connects this game window to the local server
+    // every game window has its own client
+    d_client: TSimpleGameClient;
+
+    // this list stores the names of the players inside the current lobby
+    d_lobbyPlayers: TStringList;
+
+    // this list stores the open game sessions that are shown on the home screen
+    d_sessions: TStringList;
+
+    d_sendPlayerTimer: Single;
+    d_sendObstacleTimer: Single;
+
+    procedure RefreshSessionsList;
+
+    procedure HandleServerMessage(const AMessage: string);
+    procedure StartLocalMultiplayer;
+
+//    procedure BuildHomeUi;
+//    procedure BuildLobbyUi;
+
+    procedure ApplyMainStyling;
+    procedure LoadPlayerName;
+    procedure SavePlayerName;
+    procedure UpdateStartButtonText;
+
+    procedure RefreshLobbyPlayersList;
+    procedure StartSinglePlayerGame;
+    procedure GoToLobby;
+    procedure LeaveToHome;
+
+    procedure edtPlayerNameTyping(Sender: TObject);
+    procedure chkMultiplayerChange(Sender: TObject);
+    procedure btnJoinSessionClick(Sender: TObject);
+    procedure btnBackToHomeClick(Sender: TObject);
+
+  public
+    destructor Destroy; override;
+    procedure SetScore(const Score: Single);
+    procedure ShowGameOver;
+    procedure HideGameOver;
+    procedure SetOnRestart(const ACallback: TProc);
+    procedure FormKeyDown(Sender: TObject; var Key: Word; var KeyChar: Char; Shift: TShiftState);
+    procedure layGameContainerMouseDown(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X, Y: Single);
+    procedure FormKeyUp(Sender: TObject; var Key: Word; var KeyChar: Char; Shift: TShiftState);
+
+    procedure BringGameUiToFront;
+  end;
+
+var
+  frmMain: TfrmMain;
+  OldWndProc: Pointer;
+
+implementation
+
+{$R *.fmx}
+{$R *.NmXhdpiPh.fmx ANDROID}
+{$R *.iPhone4in.fmx IOS}
+{$R *.Windows.fmx MSWINDOWS}
+
+// this catches keyboard input from windows
+// this helps because buttons or edit fields can sometimes take focus away from the game
+function NewWndProc(hWnd: HWND; Msg: UINT; wParam: WPARAM; lParam: LPARAM): LRESULT; stdcall;
+begin
+  try
+  if Assigned(frmMain) and Assigned(frmMain.d_input) then
+  begin
+    case Msg of
+      WM_KEYDOWN:
+        frmMain.d_input.KeyDown(wParam);
+
+      WM_KEYUP:
+        frmMain.d_input.KeyUp(wParam);
+    end;
+  end;
+
+  // this sends the message back to the normal windows system after we used it
+  Result := CallWindowProc(OldWndProc, hWnd, Msg, wParam, lParam);
+  except
+    on E: Exception do
+    begin
+      TErrorHandler.ReportError('frmMainUnit new wnd proc error: ' + E.Message);
+    end;
+  end;
+end;
+
+// this searches inside a parent control until it finds the component name
+// this is used because some game controls are inside the game frame
+function FindComponentRecursive(AParent: TComponent; const AName: string): TComponent;
+var
+  I: Integer;
+  Child: TComponent;
+begin
+  try
+  Result := nil;
+
+  if not Assigned(AParent) then
+    Exit;
+
+  Result := AParent.FindComponent(AName);
+
+  if Assigned(Result) then
+    Exit;
+
+  for I := 0 to AParent.ComponentCount - 1 do
+  begin
+    Child := AParent.Components[I];
+    Result := FindComponentRecursive(Child, AName);
+
+    if Assigned(Result) then
+      Exit;
+  end;
+  except
+    on E: Exception do
+    begin
+      TErrorHandler.ReportError('frmMainUnit FindComponentRecursive error: ' + E.Message);
+    end;
+  end;
+end;
+
+// this runs once when the form opens
+// it builds the ui, loads the player name, starts local multiplayer and prepares the game engine
+procedure TfrmMain.FormCreate(Sender: TObject);
+var
+  Wnd: HWND;
+begin
+  try
+  // this list stores player scores by player name
+  d_playerScores := TStringList.Create;
+
+  // set the start size of the game window
+  Self.Width := 1200;
+  Self.Height := 800;
+
+  // place the window in the center of the screen
+  Self.Position := TFormPosition.ScreenCenter;
+
+  // hide the tab buttons because the code controls which page is shown
+  tcContent.TabPosition := TTabPosition.None;
+  tcContent.ActiveTab := tabHome;
+
+  // this object stores keyboard and mouse input for the game loop
+  d_input := TInputState.Create;
+
+  // get game ui controls from the game frame
+  lblScore := FindComponentRecursive(layGameContainer, 'lblScore') as TLabel;
+  lblGameOver := FindComponentRecursive(layGameContainer, 'lblGameOver') as TLabel;
+  btnRestart := FindComponentRecursive(layGameContainer, 'btnRestart') as TButton;
+
+  if Assigned(lblScore) then
+  begin
+    // do not let the label move other ui elements
+    lblScore.Align := TAlignLayout.None;
+
+    // keep the score label in the right top corner when the window resizes
+    lblScore.Anchors := [TAnchorKind.akTop, TAnchorKind.akRight];
+
+    // make sure it does not block clicks or collision related input
+    lblScore.HitTest := False;
+
+    // size for multiple players
+    lblScore.Width := 300;
+    lblScore.Height := 120;
+    lblScore.WordWrap := True;
+
+    // place it in the right top corner
+    lblScore.Position.X := layGameContainer.Width - lblScore.Width - 20;
+    lblScore.Position.Y := 20;
+  end;
+
+  // the start button should not steal keyboard focus during gameplay
+  btnStartAndLeave.CanFocus := False;
+  btnStartAndLeave.TabStop := False;
+
+  // connect input events to this form
+  Self.OnKeyDown := FormKeyDown;
+  Self.OnKeyUp := FormKeyUp;
+  layGameContainer.OnMouseDown := layGameContainerMouseDown;
+  layGameContainer.CanFocus := True;
+
+
+  d_lastFrameTime := TThread.GetTickCount64;
+
+//  BuildHomeUi;
+//  BuildLobbyUi;
+
+  d_homeScreen := THomeScreen.Create(tabHome);
+  d_homeScreen.Build;
+
+  d_lobbyScreen := TLobbyScreen.Create(TabLobby);
+  d_lobbyScreen.Build;
+
+  d_homeScreen.PlayerNameEdit.OnTyping := edtPlayerNameTyping;
+  d_homeScreen.MultiplayerCheckBox.OnChange := chkMultiplayerChange;
+  d_homeScreen.ThemeJapaneseButton.OnClick := btnThemeJapaneseClick;
+  d_homeScreen.ThemeMoonlandingButton.OnClick := btnThemeMoonlandingClick;
+  d_lobbyScreen.BackToHomeButton.OnClick := btnBackToHomeClick;
+
+  ApplyMainStyling;
+
+  // load the saved name before multiplayer starts
+  LoadPlayerName;
+
+  RefreshLobbyPlayersList;
+
+  // create the lists that store multiplayer data from the server
+  d_lobbyPlayers := TStringList.Create;
+  d_sessions := TStringList.Create;
+
+  // start the local server if possible and connect this window as a client
+  StartLocalMultiplayer;
+
+  // fill the session list with the current server data
+  RefreshSessionsList;
+
+  // create and prepare the game engine
+  d_gameEngine := TGameEngine.Create;
+  d_gameEngine.Initialize(Self);
+
+  d_gameEngine.SetCollisionEnabled(d_isHost);
+  d_gameEngine.SetHostMode(d_isHost);
+
+  d_gameEngine.SetCanvasSize(layGameContainer.Width, layGameContainer.Height);
+
+  // this lets the engine update the score text in this form
+  d_gameEngine.SetOnScoreUpdate(
+    procedure(S: Single)
+    begin
+      SetScore(S);
+    end
+  );
+
+  // this lets the engine tell the form when the player lost
+  d_gameEngine.SetOnGameOver(ShowGameOver);
+
+  // this code is used when the restart button is clicked
+  SetOnRestart(
+    procedure
+    begin
+      HideGameOver;
+
+//      if Assigned(d_gameEngine) then
+//        d_gameEngine.RestartGame;
+if Assigned(d_gameEngine) then
+  d_gameEngine.RestartGame(not d_multiplayerActive);
+      tmrGameLoop.Enabled := True;
+    end
+  );
+
+  if Assigned(btnRestart) then
+    btnRestart.OnClick := btnRestartClick;
+
+  // game loop starts only when the game starts
+  tmrGameLoop.Enabled := False;
+
+  HideGameOver;
+  SetScore(0);
+  UpdateStartButtonText;
+  BringGameUiToFront;
+
+  // this installs the windows keyboard hook for better input
+  Wnd := WindowHandleToPlatform(Self.Handle).Wnd;
+  OldWndProc := Pointer(SetWindowLongPtr(Wnd, GWLP_WNDPROC, LONG_PTR(@NewWndProc)));
+  except
+    on E: Exception do
+    begin
+      TErrorHandler.ReportError('frmMainUnit formcreate error: ' + E.Message);
+    end;
+  end;
+end;
+
+// this starts the simple local multiplayer setup
+// the first game window starts the server on port 7777
+// every game window then connects to that server as a client
+procedure TfrmMain.StartLocalMultiplayer;
+begin
+try
+  d_server := TSimpleGameServer.Create;
+
+  // if this returns true, this window is the host
+  d_isHost := d_server.Start(7777);
+
+  d_client := TSimpleGameClient.Create;
+  d_client.OnMessage := HandleServerMessage;
+
+  if d_client.Connect('127.0.0.1', 7777) then
+    d_client.SendLine('getsessions');
+  except
+    on E: Exception do
+    begin
+      TErrorHandler.ReportError('frmMainUnit StartLocalMultiplayer error: ' + E.Message);
+    end;
+  end;
+end;
+
+// this receives messages from the multiplayer server
+// messages are simple text commands like sessions, lobby and startgame
+procedure TfrmMain.HandleServerMessage(const AMessage: string);
+var
+  Parts: TArray<string>;
+begin
+  try
+  // messages use | as separator
+  // example: lobby|player1,player2
+  Parts := AMessage.Split(['|']);
+
+  if Length(Parts) = 0 then
+    Exit;
+
+  if ((Parts[0] = 'state') or (Parts[0] = 'obstacles')) and
+     (not d_multiplayerActive) then
+    Exit;
+
+  if Parts[0] = 'sessions' then
+  begin
+    d_sessions.Clear;
+
+    // the session text contains spaces
+    // so we add it as one full line and do not use CommaText here
+    if (Length(Parts) > 1) and (Trim(Parts[1]) <> '') then
+      d_sessions.Add(Parts[1]);
+
+    RefreshSessionsList;
+  end
+  else if Parts[0] = 'lobby' then
+  begin
+    d_lobbyPlayers.Clear;
+
+    // lobby players are sent with commas between names
+    // example: player1,player2
+    if Length(Parts) > 1 then
+      d_lobbyPlayers.CommaText := Parts[1];
+
+    RefreshLobbyPlayersList;
+  end
+  else if Parts[0] = 'startgame' then
+  begin
+    // when the server says startgame, all clients start the game
+    StartSinglePlayerGame;
+  end
+  else if Parts[0] = 'state' then
+  begin
+    if Length(Parts) >= 7 then
+    begin
+      d_gameEngine.UpdateRemotePlayer(
+        Parts[1],
+        StrToFloatDef(Parts[2], 0),
+        StrToFloatDef(Parts[3], 0),
+        StrToIntDef(Parts[4], 0),
+        StrToIntDef(Parts[5], 0),
+        Parts[6] = '1'
+      );
+
+      // store score from remote player
+      if (Length(Parts) >= 8) and Assigned(d_playerScores) then
+        d_playerScores.Values[Parts[1]] := Format('%.0f', [StrToFloatDef(Parts[7], 0)]);
+
+      // refresh score label after remote score update
+      SetScore(d_localScore);
+    end;
+  end
+  else if Parts[0] = 'host' then
+  begin
+    if Length(Parts) > 1 then
+    begin
+      d_isHost := SameText(Parts[1], d_playerName);
+
+      if Assigned(d_gameEngine) then
+      begin
+        d_gameEngine.SetHostMode(d_isHost);
+        d_gameEngine.SetCollisionEnabled(d_isHost);
+      end;
+    end;
+  end
+  else if Parts[0] = 'obstacles' then
+  begin
+    if Assigned(d_gameEngine) and (not d_isHost) then
+      d_gameEngine.ApplyObstacleSyncText(AMessage);
+  end;
+  except
+    on E: Exception do
+    begin
+      TErrorHandler.ReportError('frmMainUnit HandleServerMessage error: ' + E.Message);
+    end;
+  end;
+end;
+
+// this redraws the open game sessions on the home screen
+// each session gets a join button
+procedure TfrmMain.RefreshSessionsList;
+var
+  Item: TListBoxItem;
+  JoinButton: TButton;
+  LabelText: TLabel;
+  I: Integer;
+begin
+  try
+  if not Assigned(d_homeScreen) or not Assigned(d_homeScreen.SessionList) then
+    Exit;
+
+  d_homeScreen.SessionList.Clear;
+
+  if not Assigned(d_sessions) or (d_sessions.Count = 0) then
+  begin
+    Item := TListBoxItem.Create(d_homeScreen.SessionList);
+    Item.Parent := d_homeScreen.SessionList;
+    Item.Text := 'geen open game sessies';
+    Item.Height := 46;
+    Exit;
+  end;
+
+  for I := 0 to d_sessions.Count - 1 do
+  begin
+    Item := TListBoxItem.Create(d_homeScreen.SessionList);
+    Item.Parent := d_homeScreen.SessionList;
+    Item.Height := 46;
+
+    LabelText := TLabel.Create(Item);
+    LabelText.Parent := Item;
+    LabelText.Text := d_sessions[I];
+    LabelText.Position.X := 12;
+    LabelText.Position.Y := 12;
+    LabelText.Width := 250;
+    LabelText.Height := 24;
+    LabelText.StyledSettings := [];
+    LabelText.TextSettings.FontColor := $FF11351F;
+    LabelText.TextSettings.Font.Style := [TFontStyle.fsBold];
+
+    JoinButton := TButton.Create(Item);
+    JoinButton.Parent := Item;
+    JoinButton.Text := 'Join';
+    JoinButton.Position.X := 300;
+    JoinButton.Position.Y := 6;
+    JoinButton.Width := 76;
+    JoinButton.Height := 34;
+
+    // clicking join sends this player to the lobby
+    JoinButton.OnClick := btnJoinSessionClick;
+  end;
+  except
+    on E: Exception do
+    begin
+      TErrorHandler.ReportError('frmMainUnit RefreshSessionsList error: ' + E.Message);
+    end;
+  end;
+end;
+
+// this builds the home screen controls
+//procedure TfrmMain.BuildHomeUi;
+//var
+//  TitleLabel: TLabel;
+//  SubTitleLabel: TLabel;
+//begin
+//  rectHomeBackground := TRectangle.Create(Self);
+//  rectHomeBackground.Parent := tabHome;
+//  rectHomeBackground.Align := TAlignLayout.Client;
+//  rectHomeBackground.Fill.Color := $FF11351F;
+//  rectHomeBackground.Stroke.Kind := TBrushKind.None;
+//  rectHomeBackground.HitTest := False;
+//
+//  rectHomeCard := TRectangle.Create(Self);
+//  rectHomeCard.Parent := tabHome;
+//  rectHomeCard.Align := TAlignLayout.Center;
+//  rectHomeCard.Width := 520;
+//  rectHomeCard.Height := 560;
+//  rectHomeCard.XRadius := 28;
+//  rectHomeCard.YRadius := 28;
+//  rectHomeCard.Fill.Color := $EE1F5E32;
+//  rectHomeCard.Stroke.Color := $FFFFD166;
+//  rectHomeCard.Stroke.Thickness := 3;
+//  rectHomeCard.HitTest := False;
+//
+//  TitleLabel := TLabel.Create(Self);
+//  TitleLabel.Parent := rectHomeCard;
+//  TitleLabel.Text := 'Nano Banana Runner';
+//  TitleLabel.Position.X := 60;
+//  TitleLabel.Position.Y := 58;
+//  TitleLabel.Width := 430;
+//  TitleLabel.Height := 42;
+//  TitleLabel.StyledSettings := [];
+//  TitleLabel.TextSettings.Font.Size := 30;
+//  TitleLabel.TextSettings.Font.Style := [TFontStyle.fsBold];
+//  TitleLabel.TextSettings.FontColor := $FFFFD166;
+//
+//  SubTitleLabel := TLabel.Create(Self);
+//  SubTitleLabel.Parent := rectHomeCard;
+//  SubTitleLabel.Text := 'Kies je stijl, vul je naam in en start je avontuur';
+//  SubTitleLabel.Position.X := 62;
+//  SubTitleLabel.Position.Y := 102;
+//  SubTitleLabel.Width := 430;
+//  SubTitleLabel.Height := 28;
+//  SubTitleLabel.StyledSettings := [];
+//  SubTitleLabel.TextSettings.Font.Size := 15;
+//  SubTitleLabel.TextSettings.FontColor := $FFE9F5DB;
+//
+//  lblPlayerName := TLabel.Create(Self);
+//  lblPlayerName.Parent := rectHomeCard;
+//  lblPlayerName.Text := 'Spelernaam';
+//  lblPlayerName.Position.X := 62;
+//  lblPlayerName.Position.Y := 152;
+//  lblPlayerName.Width := 180;
+//  lblPlayerName.Height := 24;
+//  lblPlayerName.StyledSettings := [];
+//  lblPlayerName.TextSettings.Font.Size := 15;
+//  lblPlayerName.TextSettings.Font.Style := [TFontStyle.fsBold];
+//  lblPlayerName.TextSettings.FontColor := $FFFFF3B0;
+//
+//  edtPlayerName := TEdit.Create(Self);
+//  edtPlayerName.Parent := rectHomeCard;
+//  edtPlayerName.Position.X := 62;
+//  edtPlayerName.Position.Y := 180;
+//  edtPlayerName.Width := 300;
+//  edtPlayerName.Height := 42;
+//  edtPlayerName.TextPrompt := 'Vul je naam in';
+//
+//  // this saves the name while the user is typing
+//  edtPlayerName.OnTyping := edtPlayerNameTyping;
+//
+//  chkMultiplayer := TCheckBox.Create(Self);
+//  chkMultiplayer.Parent := rectHomeCard;
+//  chkMultiplayer.Text := 'multiplayer';
+//  chkMultiplayer.Position.X := 62;
+//  chkMultiplayer.Position.Y := 238;
+//  chkMultiplayer.Width := 180;
+//  chkMultiplayer.Height := 34;
+//  chkMultiplayer.StyledSettings := [];
+//  chkMultiplayer.TextSettings.Font.Size := 16;
+//  chkMultiplayer.TextSettings.FontColor := $FFFFFFFF;
+//
+//  // when this changes, the start button text changes too
+//  chkMultiplayer.OnChange := chkMultiplayerChange;
+//
+//  btnThemeJapanese := TButton.Create(Self);
+//  btnThemeJapanese.Parent := rectHomeCard;
+//  btnThemeJapanese.Text := 'mythic japanese';
+//  btnThemeJapanese.Position.X := 62;
+//  btnThemeJapanese.Position.Y := 296;
+//  btnThemeJapanese.Width := 190;
+//  btnThemeJapanese.Height := 44;
+//  btnThemeJapanese.StyledSettings := [];
+//  btnThemeJapanese.TextSettings.Font.Style := [TFontStyle.fsBold];
+//  btnThemeJapanese.TextSettings.FontColor := $FF0B2B18;
+//  btnThemeJapanese.OnClick := btnThemeJapaneseClick;
+//
+//  btnThemeMoonlanding := TButton.Create(Self);
+//  btnThemeMoonlanding.Parent := rectHomeCard;
+//  btnThemeMoonlanding.Text := 'fake moonlanding';
+//  btnThemeMoonlanding.Position.X := 270;
+//  btnThemeMoonlanding.Position.Y := 296;
+//  btnThemeMoonlanding.Width := 190;
+//  btnThemeMoonlanding.Height := 44;
+//  btnThemeMoonlanding.StyledSettings := [];
+//  btnThemeMoonlanding.TextSettings.Font.Style := [TFontStyle.fsBold];
+//  btnThemeMoonlanding.TextSettings.FontColor := $FF0B2B18;
+//  btnThemeMoonlanding.OnClick := btnThemeMoonlandingClick;
+//
+//  lblSessions := TLabel.Create(Self);
+//  lblSessions.Parent := rectHomeCard;
+//  lblSessions.Text := 'Open game sessies';
+//  lblSessions.Position.X := 62;
+//  lblSessions.Position.Y := 372;
+//  lblSessions.Width := 250;
+//  lblSessions.Height := 28;
+//  lblSessions.StyledSettings := [];
+//  lblSessions.TextSettings.Font.Size := 17;
+//  lblSessions.TextSettings.Font.Style := [TFontStyle.fsBold];
+//  lblSessions.TextSettings.FontColor := $FFFFD166;
+//
+//  // this list will be filled with real sessions from the server
+//  lstSession := TListBox.Create(Self);
+//  lstSession.Parent := rectHomeCard;
+//  lstSession.Position.X := 62;
+//  lstSession.Position.Y := 408;
+//  lstSession.Width := 398;
+//  lstSession.Height := 146;
+//end;
+
+// this builds the lobby screen controls
+//procedure TfrmMain.BuildLobbyUi;
+//begin
+//  rectLobbyBackground := TRectangle.Create(Self);
+//  rectLobbyBackground.Parent := TabLobby;
+//  rectLobbyBackground.Align := TAlignLayout.Client;
+//  rectLobbyBackground.Fill.Color := $FF0E2F44;
+//  rectLobbyBackground.Stroke.Kind := TBrushKind.None;
+//  rectLobbyBackground.HitTest := False;
+//
+//  rectLobbyCard := TRectangle.Create(Self);
+//  rectLobbyCard.Parent := TabLobby;
+//  rectLobbyCard.Align := TAlignLayout.Center;
+//  rectLobbyCard.Width := 520;
+//  rectLobbyCard.Height := 520;
+//  rectLobbyCard.XRadius := 28;
+//  rectLobbyCard.YRadius := 28;
+//  rectLobbyCard.Fill.Color := $EE145A45;
+//  rectLobbyCard.Stroke.Color := $FFFF9F1C;
+//  rectLobbyCard.Stroke.Thickness := 3;
+//  rectLobbyCard.HitTest := False;
+//
+//  lblLobbyTitle := TLabel.Create(Self);
+//  lblLobbyTitle.Parent := rectLobbyCard;
+//  lblLobbyTitle.Text := 'Lobby';
+//  lblLobbyTitle.Position.X := 62;
+//  lblLobbyTitle.Position.Y := 60;
+//  lblLobbyTitle.Width := 420;
+//  lblLobbyTitle.Height := 44;
+//  lblLobbyTitle.StyledSettings := [];
+//  lblLobbyTitle.TextSettings.Font.Size := 30;
+//  lblLobbyTitle.TextSettings.Font.Style := [TFontStyle.fsBold];
+//  lblLobbyTitle.TextSettings.FontColor := $FFFFD166;
+//
+//  lblLobbyPlayers := TLabel.Create(Self);
+//  lblLobbyPlayers.Parent := rectLobbyCard;
+//  lblLobbyPlayers.Text := 'Spelers in deze sessie';
+//  lblLobbyPlayers.Position.X := 62;
+//  lblLobbyPlayers.Position.Y := 126;
+//  lblLobbyPlayers.Width := 300;
+//  lblLobbyPlayers.Height := 28;
+//  lblLobbyPlayers.StyledSettings := [];
+//  lblLobbyPlayers.TextSettings.Font.Size := 17;
+//  lblLobbyPlayers.TextSettings.Font.Style := [TFontStyle.fsBold];
+//  lblLobbyPlayers.TextSettings.FontColor := $FFFFFFFF;
+//
+//  // this list shows the players that the server says are in the lobby
+//  lstLobbyPlayer := TListBox.Create(Self);
+//  lstLobbyPlayer.Parent := rectLobbyCard;
+//  lstLobbyPlayer.Position.X := 62;
+//  lstLobbyPlayer.Position.Y := 166;
+//  lstLobbyPlayer.Width := 398;
+//  lstLobbyPlayer.Height := 250;
+//
+//  btnBackToHome := TButton.Create(Self);
+//  btnBackToHome.Parent := rectLobbyCard;
+//  btnBackToHome.Text := 'Terug';
+//  btnBackToHome.Position.X := 62;
+//  btnBackToHome.Position.Y := 440;
+//  btnBackToHome.Width := 140;
+//  btnBackToHome.Height := 44;
+//  btnBackToHome.StyledSettings := [];
+//  btnBackToHome.TextSettings.Font.Style := [TFontStyle.fsBold];
+//  btnBackToHome.TextSettings.FontColor := $FF0B2B18;
+//  btnBackToHome.OnClick := btnBackToHomeClick;
+//end;
+
+// this sets the main top bar and start button
+procedure TfrmMain.ApplyMainStyling;
+begin
+  Panel1.Align := TAlignLayout.Top;
+  Panel1.Height := 70;
+  Panel1.StyleLookup := '';
+  Panel1.Visible := True;
+
+  btnStartAndLeave.Parent := Panel1;
+  btnStartAndLeave.Align := TAlignLayout.Right;
+  btnStartAndLeave.Margins.Right := 22;
+  btnStartAndLeave.Margins.Top := 14;
+  btnStartAndLeave.Margins.Bottom := 14;
+  btnStartAndLeave.Width := 190;
+  btnStartAndLeave.StyledSettings := [];
+  btnStartAndLeave.TextSettings.Font.Style := [TFontStyle.fsBold];
+  btnStartAndLeave.TextSettings.FontColor := $FF0B2B18;
+end;
+
+// this loads the player name from an ini file
+// the ini file is saved next to the exe
+procedure TfrmMain.LoadPlayerName;
+var
+  Ini: TIniFile;
+  FileName: string;
+begin
+  try
+  // ParamStr(0) is the full path to the running exe
+  // ExtractFilePath gets only the folder part
+  FileName := ExtractFilePath(ParamStr(0)) + 'AdventureRunner.ini';
+
+  Ini := TIniFile.Create(FileName);
+  try
+    // read the saved player name
+    // if there is no saved name yet, use Player
+    d_playerName := Ini.ReadString('player', 'name', 'Player');
+  finally
+    Ini.Free;
+  end;
+
+//  if Assigned(edtPlayerName) then
+//    edtPlayerName.Text := d_playerName;
+
+    if Assigned(d_homeScreen) and Assigned(d_homeScreen.PlayerNameEdit) then
+      d_homeScreen.PlayerNameEdit.Text := d_playerName;
+  except
+    on E: Exception do
+    begin
+      TErrorHandler.ReportError('frmMainUnit LoadPlayerName error: ' + E.Message);
+    end;
+  end;
+end;
+
+// this saves the player name to an ini file
+// this is called while the user types
+procedure TfrmMain.SavePlayerName;
+var
+  Ini: TIniFile;
+  FileName: string;
+begin
+  try
+  // this creates the file path next to the exe
+  FileName := ExtractFilePath(ParamStr(0)) + 'AdventureRunner.ini';
+
+  Ini := TIniFile.Create(FileName);
+  try
+    Ini.WriteString('player', 'name', d_playerName);
+  finally
+    Ini.Free;
+  end;
+  except
+    on E: Exception do
+    begin
+      TErrorHandler.ReportError('frmMainUnit SavePlayerName error: ' + E.Message);
+    end;
+  end;
+end;
+
+// this runs every time the user types in the name field
+// the name is saved right away, without a save button
+procedure TfrmMain.edtPlayerNameTyping(Sender: TObject);
+begin
+  try
+  //d_playerName := Trim(edtPlayerName.Text);
+  d_playerName := Trim(d_homeScreen.PlayerNameEdit.Text);
+
+  if d_playerName = '' then
+    d_playerName := 'Player';
+
+  SavePlayerName;
+
+  // update the lobby list so the local name is shown correctly
+  RefreshLobbyPlayersList;
+  except
+    on E: Exception do
+    begin
+      TErrorHandler.ReportError('frmMainUnit edtPlayerNameTyping error: ' + E.Message);
+    end;
+  end;
+end;
+
+// this updates the start button when multiplayer is checked or unchecked
+procedure TfrmMain.chkMultiplayerChange(Sender: TObject);
+begin
+  UpdateStartButtonText;
+end;
+
+// this redraws the lobby player list
+// the names come from the server through the lobby message
+procedure TfrmMain.RefreshLobbyPlayersList;
+var
+  Item: TListBoxItem;
+  I: Integer;
+begin
+  try
+  if not Assigned(d_lobbyScreen) or not Assigned(d_lobbyScreen.LobbyPlayerList) then
+    Exit;
+
+  d_lobbyScreen.LobbyPlayerList.Clear;
+
+  if Assigned(d_lobbyPlayers) and (d_lobbyPlayers.Count > 0) then
+  begin
+    for I := 0 to d_lobbyPlayers.Count - 1 do
+    begin
+      Item := TListBoxItem.Create(d_lobbyScreen.LobbyPlayerList);
+      Item.Parent := d_lobbyScreen.LobbyPlayerList;
+      Item.Text := d_lobbyPlayers[I];
+      Item.Height := 42;
+    end;
+  end
+  else
+  begin
+    Item := TListBoxItem.Create(d_lobbyScreen.LobbyPlayerList);
+    Item.Parent := d_lobbyScreen.LobbyPlayerList;
+    Item.Text := d_playerName + '  jij';
+    Item.Height := 42;
+  end;
+  except
+    on E: Exception do
+    begin
+      TErrorHandler.ReportError('frmMainUnit RefreshLobbyPlayersList error: ' + E.Message);
+    end;
+  end;
+end;
+
+// this sends the player to the lobby
+// it also tells the server that this player wants to join matchmaking
+procedure TfrmMain.GoToLobby;
+begin
+  tcContent.ActiveTab := TabLobby;
+  d_multiplayerActive := True;
+  if Assigned(d_client) then
+    // find means join or create a lobby
+    // the player name is sent with it
+    d_client.SendLine('find|' + d_playerName);
+
+  UpdateStartButtonText;
+end;
+
+// this starts the actual game on this client
+// in multiplayer this is called when the server sends startgame
+procedure TfrmMain.StartSinglePlayerGame;
+begin
+try
+  d_multiplayerActive := Assigned(d_homeScreen) and d_homeScreen.MultiplayerCheckBox.IsChecked;
+  tcContent.ActiveTab := tabGame;
+  btnStartAndLeave.Text := 'Leave Game';
+
+  HideGameOver;
+  layGameContainer.SetFocus;
+
+  if Assigned(d_gameEngine) then
+    d_gameEngine.StartGame;
+
+  // this timer drives the game update and render loop
+  tmrGameLoop.Enabled := True;
+  except
+    on E: Exception do
+    begin
+      TErrorHandler.ReportError('frmMainUnit StartSinglePlayerGame error: ' + E.Message);
+    end;
+  end;
+end;
+
+// this stops the game and goes back to the home screen
+procedure TfrmMain.LeaveToHome;
+begin
+  tcContent.ActiveTab := tabHome;
+
+  if Assigned(d_gameEngine) then
+    d_gameEngine.StopGame;
+
+  tmrGameLoop.Enabled := False;
+  UpdateStartButtonText;
+end;
+
+// this is used by the join button in the session list
+procedure TfrmMain.btnJoinSessionClick(Sender: TObject);
+begin
+  d_homeScreen.MultiplayerCheckBox.IsChecked := True;
+  GoToLobby;
+end;
+
+// this moves from lobby back to home
+procedure TfrmMain.btnBackToHomeClick(Sender: TObject);
+begin
+  tcContent.ActiveTab := tabHome;
+  UpdateStartButtonText;
+end;
+
+// this is the main button logic
+// on home it starts single player or matchmaking
+// in lobby it asks the server to start the game for all players
+// in game it leaves the game
+procedure TfrmMain.btnStartAndLeaveClick(Sender: TObject);
+begin
+  if tcContent.ActiveTab = tabHome then
+  begin
+    if Assigned(d_homeScreen) and Assigned(d_homeScreen.MultiplayerCheckBox) and d_homeScreen.MultiplayerCheckBox.IsChecked then
+      GoToLobby
+    else
+      StartSinglePlayerGame;
+
+    Exit;
+  end;
+
+  if tcContent.ActiveTab = TabLobby then
+  begin
+    if Assigned(d_client) then
+      // start tells the server to send startgame to all lobby players
+      d_client.SendLine('start');
+
+    Exit;
+  end;
+
+  LeaveToHome;
+end;
+
+// this keeps the main button text correct for the current page
+procedure TfrmMain.UpdateStartButtonText;
+begin
+  if tcContent.ActiveTab = tabHome then
+  begin
+    if Assigned(d_homeScreen) and Assigned(d_homeScreen.MultiplayerCheckBox) and d_homeScreen.MultiplayerCheckBox.IsChecked then
+      btnStartAndLeave.Text := 'Start Matchmaking'
+    else
+      btnStartAndLeave.Text := 'Start Game';
+
+    Exit;
+  end;
+
+  if tcContent.ActiveTab = TabLobby then
+  begin
+    btnStartAndLeave.Text := 'Start Game';
+    Exit;
+  end;
+
+  btnStartAndLeave.Text := 'Leave Game';
+end;
+
+
+//
+//// this resizes the game canvas and keeps ui inside the cards usable
+//procedure TfrmMain.FormResize(Sender: TObject);
+//var
+//  Padding: Single;
+//  ContentW: Single;
+//  ThemeGap: Single;
+//  ThemeButtonW: Single;
+//begin
+//  if Assigned(rectHomeCard) then
+//  begin
+//    Padding := 32;
+//    ContentW := rectHomeCard.Width - Padding * 2;
+//
+//    lblPlayerName.Position.X := Padding;
+//    lblPlayerName.Width := ContentW;
+//
+//    edtPlayerName.Position.X := Padding;
+//    edtPlayerName.Width := ContentW;
+//
+//    chkMultiplayer.Position.X := Padding;
+//    chkMultiplayer.Width := ContentW;
+//
+//    ThemeGap := 16;
+//
+//    if ContentW > 390 then
+//    begin
+//      ThemeButtonW := (ContentW - ThemeGap) / 2;
+//
+//      btnThemeJapanese.Position.X := Padding;
+//      btnThemeJapanese.Width := ThemeButtonW;
+//
+//      btnThemeMoonlanding.Position.X := Padding + ThemeButtonW + ThemeGap;
+//      btnThemeMoonlanding.Position.Y := 296;
+//      btnThemeMoonlanding.Width := ThemeButtonW;
+//
+//      lblSessions.Position.Y := 372;
+//    end
+//    else
+//    begin
+//      btnThemeJapanese.Position.X := Padding;
+//      btnThemeJapanese.Width := ContentW;
+//
+//      btnThemeMoonlanding.Position.X := Padding;
+//      btnThemeMoonlanding.Position.Y := 350;
+//      btnThemeMoonlanding.Width := ContentW;
+//
+//      lblSessions.Position.Y := 426;
+//    end;
+//
+//    lblSessions.Position.X := Padding;
+//    lblSessions.Width := ContentW;
+//
+//    lstSession.Position.X := Padding;
+//    lstSession.Position.Y := lblSessions.Position.Y + 36;
+//    lstSession.Width := ContentW;
+//    lstSession.Height := rectHomeCard.Height - lstSession.Position.Y - Padding;
+//  end;
+//
+//  if Assigned(rectLobbyCard) then
+//  begin
+//    Padding := 32;
+//    ContentW := rectLobbyCard.Width - Padding * 2;
+//
+//    lblLobbyTitle.Position.X := Padding;
+//    lblLobbyTitle.Width := ContentW;
+//
+//    lblLobbyPlayers.Position.X := Padding;
+//    lblLobbyPlayers.Width := ContentW;
+//
+//    lstLobbyPlayer.Position.X := Padding;
+//    lstLobbyPlayer.Width := ContentW;
+//    lstLobbyPlayer.Height := rectLobbyCard.Height - 250;
+//
+//    btnBackToHome.Position.X := Padding;
+//    btnBackToHome.Position.Y := rectLobbyCard.Height - 76;
+//    btnBackToHome.Width := Min(160, ContentW);
+//  end;
+//
+//  // tell the game engine the new game area size
+//  if Assigned(d_gameEngine) then
+//    d_gameEngine.SetCanvasSize(layGameContainer.Width, layGameContainer.Height);
+//
+//  BringGameUiToFront;
+//end;
+
+procedure TfrmMain.FormResize(Sender: TObject);
+begin
+  if Assigned(d_homeScreen) then
+    d_homeScreen.Resize;
+
+  if Assigned(d_lobbyScreen) then
+    d_lobbyScreen.Resize;
+
+  if Assigned(d_gameEngine) then
+    d_gameEngine.SetCanvasSize(layGameContainer.Width, layGameContainer.Height);
+
+  BringGameUiToFront;
+end;
+
+// this is the game loop
+// it reads input, updates the game and draws the new frame
+procedure TfrmMain.tmrGameLoopTimer(Sender: TObject);
+var
+  NowTime: Int64;
+  DeltaTime: Single;
+begin
+  if Assigned(d_gameEngine) then
+  begin
+
+  NowTime := TThread.GetTickCount64;
+  DeltaTime := (NowTime - d_lastFrameTime) / 1000;
+  d_lastFrameTime := NowTime;
+
+    if DeltaTime > 0.05 then
+      DeltaTime := 0.05;
+
+    // jump is consumed once so one key press gives one jump
+    if d_input.ConsumeJump then
+      d_gameEngine.HandleJump;
+
+    d_gameEngine.Update(
+      DeltaTime,
+      d_input.IsMovingLeft,
+      d_input.IsMovingRight,
+      d_input.IsMovingUp,
+      d_input.IsMovingDown
+    );
+
+    d_gameEngine.Render;
+
+  //  d_sendStateTimer := d_sendStateTimer + 0.016;
+
+    //20 eacht second data comes
+    d_sendPlayerTimer := d_sendPlayerTimer + DeltaTime;
+    d_sendObstacleTimer := d_sendObstacleTimer + DeltaTime;
+
+    if d_multiplayerActive and Assigned(d_client) and Assigned(d_gameEngine) then
+    begin
+      if d_sendPlayerTimer >= 0.05 then
+      begin
+        d_sendPlayerTimer := 0;
+        d_client.SendLine(d_gameEngine.GetPlayerSyncText(d_playerName));
+      end;
+
+      if d_isHost and (d_sendObstacleTimer >= 0.10) then
+      begin
+        d_sendObstacleTimer := 0;
+        d_client.SendLine(d_gameEngine.GetObstacleSyncText);
+      end;
+    end;
+   // BringGameUiToFront;
+  end;
+end;
+
+// this keeps the score, game over text and restart button above game images
+procedure TfrmMain.BringGameUiToFront;
+begin
+  if Assigned(lblScore) then
+    lblScore.BringToFront;
+
+  if Assigned(lblGameOver) then
+    lblGameOver.BringToFront;
+
+  if Assigned(btnRestart) then
+    btnRestart.BringToFront;
+
+  btnStartAndLeave.BringToFront;
+end;
+
+// this frees all created objects when the form closes
+destructor TfrmMain.Destroy;
+begin
+  FreeAndNil(d_client);
+  FreeAndNil(d_server);
+  FreeAndNil(d_sessions);
+  FreeAndNil(d_lobbyPlayers);
+  FreeAndNil(d_input);
+  FreeAndNil(d_gameEngine);
+  FreeAndNil(d_playerScores);
+  FreeAndNil(d_homeScreen);
+  FreeAndNil(d_lobbyScreen);
+  inherited;
+end;
+
+// this shows the game over ui
+procedure TfrmMain.ShowGameOver;
+begin
+  if Assigned(lblGameOver) then
+    lblGameOver.Visible := True;
+
+  if Assigned(btnRestart) then
+    btnRestart.Visible := True;
+
+  lblGameOver.BringToFront;
+  btnRestart.BringToFront;
+end;
+
+// this hides the game over ui
+procedure TfrmMain.HideGameOver;
+begin
+  if Assigned(lblGameOver) then
+    lblGameOver.Visible := False;
+
+  if Assigned(btnRestart) then
+    btnRestart.Visible := False;
+end;
+
+// this runs the restart callback
+procedure TfrmMain.btnRestartClick(Sender: TObject);
+begin
+  if Assigned(d_onRestart) then
+    d_onRestart;
+end;
+
+// this sends key down input to the shared input state
+procedure TfrmMain.FormKeyDown(Sender: TObject; var Key: Word; var KeyChar: Char; Shift: TShiftState);
+begin
+  d_input.KeyDown(Key);
+end;
+
+// this sends key up input to the shared input state
+procedure TfrmMain.FormKeyUp(Sender: TObject; var Key: Word; var KeyChar: Char; Shift: TShiftState);
+begin
+  d_input.KeyUp(Key);
+end;
+
+// this makes mouse or touch input work as jump input
+procedure TfrmMain.layGameContainerMouseDown(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X, Y: Single);
+begin
+  d_input.MouseDown(Button);
+end;
+
+// this updates the score label
+procedure TfrmMain.SetScore(const Score: Single);
+var
+  I: Integer;
+  NameText: string;
+  ScoreText: string;
+begin
+  if not Assigned(lblScore) then
+    Exit;
+
+  // store local score
+  d_localScore := Score;
+
+  // make sure local player is also inside the score list
+  if Assigned(d_playerScores) then
+    d_playerScores.Values[d_playerName] := Format('%.0f', [d_localScore]);
+
+  // single player only shows own score
+  if not Assigned(d_homeScreen) or not d_homeScreen.MultiplayerCheckBox.IsChecked then
+  begin
+    lblScore.Text := Format('%s: %.0f m', [d_playerName, Score]);
+    Exit;
+  end;
+
+  // multiplayer shows all player names and scores
+  ScoreText := '';
+
+  if Assigned(d_lobbyPlayers) and (d_lobbyPlayers.Count > 0) then
+  begin
+    for I := 0 to d_lobbyPlayers.Count - 1 do
+    begin
+      NameText := d_lobbyPlayers[I];
+
+      if ScoreText <> '' then
+        ScoreText := ScoreText + sLineBreak;
+
+      ScoreText := ScoreText + Format(
+        '%s: %s m',
+        [
+          NameText,
+          d_playerScores.Values[NameText]
+        ]
+      );
+    end;
+  end
+  else
+    ScoreText := Format('%s: %.0f m', [d_playerName, d_localScore]);
+
+  lblScore.Text := ScoreText;
+end;
+
+// this stores the restart code that can be called later
+procedure TfrmMain.SetOnRestart(const ACallback: TProc);
+begin
+  d_onRestart := ACallback;
+end;
+
+// this selects the japanese theme in the game engine
+procedure TfrmMain.btnThemeJapaneseClick(Sender: TObject);
+begin
+  if Assigned(d_gameEngine) then
+    d_gameEngine.SetTheme(gtMythicJapanese);
+end;
+
+// this selects the moonlanding theme in the game engine
+procedure TfrmMain.btnThemeMoonlandingClick(Sender: TObject);
+begin
+  if Assigned(d_gameEngine) then
+    d_gameEngine.SetTheme(gtFakeMoonlanding);
+end;
+
+// this runs when the visible tab changes
+procedure TfrmMain.tcContentChange(Sender: TObject);
+begin
+  UpdateStartButtonText;
+end;
+
+end.

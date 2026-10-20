@@ -1,0 +1,57 @@
+object Frame1: TFrame1
+  Align = Client
+  Size.Width = 921.000000000000000000
+  Size.Height = 679.000000000000000000
+  Size.PlatformDefault = False
+  OnMouseDown = FrameMouseDown
+  object imgPlayer: TImage
+    MultiResBitmap = <
+      item
+      end>
+    HitTest = False
+    Position.X = 24.000000000000000000
+    Position.Y = 128.000000000000000000
+  end
+  object imgObstacle1: TImage
+    MultiResBitmap = <
+      item
+      end>
+    HitTest = False
+    Position.X = 128.000000000000000000
+    Position.Y = 152.000000000000000000
+  end
+  object lblScore: TLabel
+    Align = Top
+    StyledSettings = [Family, Style, FontColor]
+    Margins.Right = 50.000000000000000000
+    Size.Width = 871.000000000000000000
+    Size.Height = 41.000000000000000000
+    Size.PlatformDefault = False
+    TextSettings.Font.Size = 20.000000000000000000
+    TextSettings.HorzAlign = Trailing
+    TextSettings.Trimming = None
+    Text = 'Label1'
+    TabOrder = 5
+  end
+  object lblGameOver: TLabel
+    Align = Center
+    StyledSettings = [Family, Style, FontColor]
+    Size.Width = 166.000000000000000000
+    Size.Height = 142.000000000000000000
+    Size.PlatformDefault = False
+    TextSettings.Font.Size = 30.000000000000000000
+    TextSettings.Trimming = None
+    Text = 'GAME OVER'
+    TabOrder = 6
+  end
+  object btnRestart: TButton
+    Align = Center
+    Margins.Top = 80.000000000000000000
+    Size.Width = 180.000000000000000000
+    Size.Height = 41.000000000000000000
+    Size.PlatformDefault = False
+    TabOrder = 7
+    Text = 'Opnieuw spelen'
+    TextSettings.Trimming = None
+  end
+end

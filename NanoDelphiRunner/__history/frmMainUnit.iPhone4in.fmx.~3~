@@ -1,0 +1,60 @@
+inherited frmMain_iPhone4in: TfrmMain_iPhone4in
+  ClientHeight = 548
+  ClientWidth = 320
+  DesignerMasterStyle = 0
+  inherited tcContent: TTabControl
+    Size.Width = 320.000000000000000000
+    Size.Height = 491.000000000000000000
+    Sizes = (
+      320s
+      477s
+      320s
+      477s)
+    inherited tabHome: TTabItem
+      Size.Width = 35.000000000000000000
+      Size.Height = 14.000000000000000000
+      ExplicitSize.cx = 53.000000000000000000
+      ExplicitSize.cy = 26.000000000000000000
+    end
+    inherited tabGame: TTabItem
+      Size.Width = 34.000000000000000000
+      Size.Height = 14.000000000000000000
+      ExplicitSize.cx = 51.000000000000000000
+      ExplicitSize.cy = 26.000000000000000000
+      inherited layGameContainer: TFrame1
+        Size.Width = 320.000000000000000000
+        Size.Height = 477.000000000000000000
+        inherited imgBackground1: TImage
+          MultiResBitmap.Height = 752
+          MultiResBitmap.Width = 1000
+          Size.Width = 320.000000000000000000
+          Size.Height = 477.000000000000000000
+        end
+        inherited imgBackground2: TImage
+          MultiResBitmap.Height = 433
+          MultiResBitmap.Width = 900
+          Size.Width = 320.000000000000000000
+          Size.Height = 477.000000000000000000
+        end
+        inherited imgBackground3: TImage
+          MultiResBitmap.Height = 521
+          MultiResBitmap.Width = 969
+          Margins.Top = 1.000000000000000000
+          Size.Width = 320.000000000000000000
+          Size.Height = 476.000000000000000000
+        end
+        inherited imgPlayer: TImage
+          MultiResBitmap.Height = 458
+          MultiResBitmap.Width = 908
+        end
+        inherited imgObstacle1: TImage
+          MultiResBitmap.Height = 417
+          MultiResBitmap.Width = 425
+        end
+      end
+    end
+  end
+  inherited Panel1: TPanel
+    Size.Width = 320.000000000000000000
+  end
+end

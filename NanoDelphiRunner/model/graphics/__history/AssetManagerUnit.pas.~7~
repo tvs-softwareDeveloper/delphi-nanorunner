@@ -1,0 +1,316 @@
+unit AssetManagerUnit;
+
+interface
+
+uses
+  System.Classes, System.SysUtils, System.Generics.Collections, System.Math,
+  FMX.Graphics,
+  GameConfigUnit, ErrorHandlerUnit, ObstacleUnit;
+
+type
+  TGameTheme = (
+    gtMythicJapanese,
+    gtFakeMoonlanding
+  );
+
+  TAssetManager = class
+  private
+
+    procedure SetThemePath;
+    procedure LoadFrames(const AFilePrefix: string; const ACount: Integer; const AList: TObjectList<TBitmap>; const AMissingText: string);
+    procedure LoadSingleBitmap(const AFileName: string; const ABitmap: TBitmap; const AMissingText: string);
+    procedure ClearThemeAssets;
+    procedure ClearBitmap(const ABitmap: TBitmap);
+  public
+    d_theme: TGameTheme;
+    d_assetsPath: string;
+    d_playerFrames: TObjectList<TBitmap>;
+    d_obstacleFrames: TObjectList<TBitmap>;
+    d_potatoFrames: TObjectList<TBitmap>;
+    d_jetpackUpFrames: TObjectList<TBitmap>;
+    d_jetpackFlyFrames: TObjectList<TBitmap>;
+    d_dragonFrames: TObjectList<TBitmap>;
+    d_demonFrames: TObjectList<TBitmap>;
+    d_jumpSprite: TBitmap;
+    d_bgFarBitmap: TBitmap;
+    d_bgMidBitmap: TBitmap;
+    d_bgFrontBitmap: TBitmap;
+    d_redbullBitmap: TBitmap;
+    d_playerJumpFrames: TObjectList<TBitmap>;
+    d_playerDuckFrames: TObjectList<TBitmap>;
+    d_alienFrames: TObjectList<TBitmap>;
+    d_bgFarestBitmap: TBitmap;
+
+    constructor Create;
+    destructor Destroy; override;
+    procedure SetTheme(const ATheme: TGameTheme);
+    procedure LoadThemeAssets;
+    property PlayerFrames: TObjectList<TBitmap> read d_playerFrames;
+    property ObstacleFrames: TObjectList<TBitmap> read d_obstacleFrames;
+    property PotatoFrames: TObjectList<TBitmap> read d_potatoFrames;
+    property JetpackUpFrames: TObjectList<TBitmap> read d_jetpackUpFrames;
+    property JetpackFlyFrames: TObjectList<TBitmap> read d_jetpackFlyFrames;
+    property DragonFrames: TObjectList<TBitmap> read d_dragonFrames;
+    property DemonFrames: TObjectList<TBitmap> read d_demonFrames;
+    property JumpSprite: TBitmap read d_jumpSprite;
+    property BgFarBitmap: TBitmap read d_bgFarBitmap;
+    property BgMidBitmap: TBitmap read d_bgMidBitmap;
+    property BgFrontBitmap: TBitmap read d_bgFrontBitmap;
+    property RedbullBitmap: TBitmap read d_redbullBitmap;
+    property BgFarestBitmap: TBitmap read d_bgFarestBitmap;
+    function GetPotatoFrameCount: Integer;
+    function GetDragonFrameCount: Integer;
+    function GetObstacleFrameCount: Integer;
+    function GetObstacleBitmap(const AKind: TObstacleKind; const AFrameIndex: Integer): TBitmap;
+  end;
+
+implementation
+
+constructor TAssetManager.Create;
+begin
+  inherited;
+
+  d_theme := gtMythicJapanese;
+  SetThemePath;
+
+  d_playerFrames := TObjectList<TBitmap>.Create(True);
+  d_obstacleFrames := TObjectList<TBitmap>.Create(True);
+  d_potatoFrames := TObjectList<TBitmap>.Create(True);
+  d_jetpackUpFrames := TObjectList<TBitmap>.Create(True);
+  d_jetpackFlyFrames := TObjectList<TBitmap>.Create(True);
+  d_dragonFrames := TObjectList<TBitmap>.Create(True);
+  d_demonFrames := TObjectList<TBitmap>.Create(True);
+
+  d_jumpSprite := TBitmap.Create;
+  d_bgFarBitmap := TBitmap.Create;
+  d_bgMidBitmap := TBitmap.Create;
+  d_bgFrontBitmap := TBitmap.Create;
+  d_redbullBitmap := TBitmap.Create;
+
+  d_playerJumpFrames := TObjectList<TBitmap>.Create(True);
+  d_playerDuckFrames := TObjectList<TBitmap>.Create(True);
+  d_alienFrames := TObjectList<TBitmap>.Create(True);
+  d_bgFarestBitmap := TBitmap.Create;
+end;
+
+destructor TAssetManager.Destroy;
+begin
+  FreeAndNil(d_playerFrames);
+  FreeAndNil(d_obstacleFrames);
+  FreeAndNil(d_potatoFrames);
+  FreeAndNil(d_jetpackUpFrames);
+  FreeAndNil(d_jetpackFlyFrames);
+  FreeAndNil(d_dragonFrames);
+  FreeAndNil(d_demonFrames);
+  FreeAndNil(d_jumpSprite);
+  FreeAndNil(d_bgFarBitmap);
+  FreeAndNil(d_bgMidBitmap);
+  FreeAndNil(d_bgFrontBitmap);
+  FreeAndNil(d_redbullBitmap);
+  FreeAndNil(d_playerJumpFrames);
+  FreeAndNil(d_playerDuckFrames);
+  FreeAndNil(d_alienFrames);
+  FreeAndNil(d_bgFarestBitmap);
+  inherited;
+end;
+
+procedure TAssetManager.SetThemePath;
+var
+  BasePath: string;
+begin
+  BasePath := IncludeTrailingPathDelimiter(ExtractFilePath(ParamStr(0)));
+
+  case d_theme of
+    gtMythicJapanese:
+      d_assetsPath := BasePath + TGameConfig.MYTHIC_JAPANESE_PATH;
+
+    gtFakeMoonlanding:
+      d_assetsPath := BasePath + TGameConfig.FAKE_MOONLANDING_PATH;
+  end;
+end;
+
+procedure TAssetManager.SetTheme(const ATheme: TGameTheme);
+begin
+  d_theme := ATheme;
+  SetThemePath;
+end;
+
+procedure TAssetManager.LoadFrames(const AFilePrefix: string; const ACount: Integer; const AList: TObjectList<TBitmap>; const AMissingText: string);
+var
+  i: Integer;
+  bmp: TBitmap;
+  path: string;
+begin
+  if not Assigned(AList) then
+    raise Exception.Create('frame list is not assigned');
+
+  AList.Clear;
+  for i := 1 to ACount do
+  begin
+    bmp := TBitmap.Create;
+    try
+      path := d_assetsPath + AFilePrefix + i.ToString + '.png';
+
+      if not FileExists(path) then
+        raise Exception.Create(AMissingText + ': ' + path);
+
+      bmp.LoadFromFile(path);
+      bmp.BitmapScale := 1;
+
+      AList.Add(bmp);
+      bmp := nil;
+    finally
+      bmp.Free;
+    end;
+  end;
+end;
+
+procedure TAssetManager.ClearBitmap(const ABitmap: TBitmap);
+begin
+  if Assigned(ABitmap) then
+    ABitmap.SetSize(0, 0);
+end;
+
+procedure TAssetManager.ClearThemeAssets;
+begin
+  d_playerFrames.Clear;
+  d_obstacleFrames.Clear;
+  d_potatoFrames.Clear;
+  d_jetpackUpFrames.Clear;
+  d_jetpackFlyFrames.Clear;
+  d_dragonFrames.Clear;
+  d_demonFrames.Clear;
+  d_playerJumpFrames.Clear;
+  d_playerDuckFrames.Clear;
+  d_alienFrames.Clear;
+
+  ClearBitmap(d_jumpSprite);
+  ClearBitmap(d_bgFarestBitmap);
+  ClearBitmap(d_bgFarBitmap);
+  ClearBitmap(d_bgMidBitmap);
+  ClearBitmap(d_bgFrontBitmap);
+  ClearBitmap(d_redbullBitmap);
+end;
+
+procedure TAssetManager.LoadSingleBitmap(const AFileName: string; const ABitmap: TBitmap; const AMissingText: string);
+var
+  path: string;
+begin
+  if not Assigned(ABitmap) then
+    raise Exception.Create('bitmap is not assigned');
+
+  path := d_assetsPath + AFileName;
+
+  if not FileExists(path) then
+    raise Exception.Create(AMissingText + ': ' + path);
+
+  ABitmap.LoadFromFile(path);
+end;
+
+procedure TAssetManager.LoadThemeAssets;
+begin
+  ClearThemeAssets;
+
+  if d_theme = gtMythicJapanese then
+  begin
+
+  LoadFrames('run', TGameConfig.PLAYER_TOTAL_FRAMES, d_playerFrames, 'run file missing');
+  LoadFrames('obstacle', TGameConfig.OBSTACLE_TOTAL_FRAMES, d_obstacleFrames, 'obstacle file missing');
+  LoadFrames('patato', TGameConfig.POTATO_TOTAL_FRAMES, d_potatoFrames, 'potato file missing');
+  LoadFrames('jetpackup', TGameConfig.JETPACK_UP_TOTAL_FRAMES, d_jetpackUpFrames, 'jetpack up file missing');
+  LoadFrames('jetpack', TGameConfig.JETPACK_FLY_TOTAL_FRAMES, d_jetpackFlyFrames, 'jetpack fly file missing');
+  LoadFrames('dragon', TGameConfig.DRAGON_TOTAL_FRAMES, d_dragonFrames, 'dragon file missing');
+  LoadFrames('demon', TGameConfig.DEMON_TOTAL_FRAMES, d_demonFrames, 'demon file missing');
+
+  LoadSingleBitmap('doublejump1.png', d_jumpSprite, 'jump sprite file missing');
+  LoadSingleBitmap('background_far.png', d_bgFarBitmap, 'background far file missing');
+  LoadSingleBitmap('background_mid.png', d_bgMidBitmap, 'background mid file missing');
+  LoadSingleBitmap('background_front.png', d_bgFrontBitmap, 'background front file missing');
+  LoadSingleBitmap('redbull.png', d_redbullBitmap, 'redbull file missing');
+  end
+  else
+  begin
+  LoadFrames('run', TGameConfig.MOON_RUN_TOTAL_FRAMES, d_playerFrames, 'moon run file missing');
+  LoadFrames('jump', TGameConfig.MOON_JUMP_TOTAL_FRAMES, d_playerJumpFrames, 'moon jump file missing');
+  LoadFrames('duck', TGameConfig.MOON_DUCK_TOTAL_FRAMES, d_playerDuckFrames, 'moon duck file missing');
+  LoadFrames('alien', TGameConfig.MOON_ALIEN_TOTAL_FRAMES, d_alienFrames, 'moon alien file missing');
+
+  LoadSingleBitmap('background_farest.png', d_bgFarestBitmap, 'background farest file missing');
+  LoadSingleBitmap('background_far.png', d_bgFarBitmap, 'background far file missing');
+  LoadSingleBitmap('background_mid.png', d_bgMidBitmap, 'background mid file missing');
+  LoadSingleBitmap('background_front.png', d_bgFrontBitmap, 'background front file missing');
+
+  LoadSingleBitmap('redbull.png', d_redbullBitmap, 'redbull file missing');
+  end;
+end;
+
+ //getters setters
+function TAssetManager.GetObstacleBitmap(const AKind: TObstacleKind; const AFrameIndex: Integer): TBitmap;
+begin
+  Result := nil;
+
+  if d_theme = gtFakeMoonlanding then
+  begin
+    case AKind of
+      okNormal:
+        begin
+          if (AFrameIndex >= 0) and (AFrameIndex < d_alienFrames.Count) then
+            Result := d_alienFrames[AFrameIndex];
+        end;
+
+      okRedbull:
+        begin
+          if Assigned(d_redbullBitmap) and not d_redbullBitmap.IsEmpty then
+            Result := d_redbullBitmap;
+        end;
+    end;
+
+    Exit;
+  end;
+
+  case AKind of
+    okPotato:
+      begin
+        if (AFrameIndex >= 0) and (AFrameIndex < d_potatoFrames.Count) then
+          Result := d_potatoFrames[AFrameIndex];
+      end;
+
+    okDragon:
+      begin
+        if (AFrameIndex >= 0) and (AFrameIndex < d_dragonFrames.Count) then
+          Result := d_dragonFrames[AFrameIndex];
+      end;
+
+    okRedbull:
+      begin
+        if Assigned(d_redbullBitmap) and not d_redbullBitmap.IsEmpty then
+          Result := d_redbullBitmap;
+      end;
+
+  else
+    begin
+      if (AFrameIndex >= 0) and (AFrameIndex < d_obstacleFrames.Count) then
+        Result := d_obstacleFrames[AFrameIndex];
+    end;
+  end;
+end;
+
+function TAssetManager.GetPotatoFrameCount: Integer;
+begin
+  Result := Max(1, d_potatoFrames.Count);
+end;
+
+function TAssetManager.GetDragonFrameCount: Integer;
+begin
+  Result := Max(1, d_dragonFrames.Count);
+end;
+
+function TAssetManager.GetObstacleFrameCount: Integer;
+begin
+  if d_theme = gtFakeMoonlanding then
+    Result := Max(1, d_alienFrames.Count)
+  else
+    Result := Max(1, d_obstacleFrames.Count);
+end;
+
+end.

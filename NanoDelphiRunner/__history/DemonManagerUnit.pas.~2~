@@ -1,0 +1,214 @@
+unit DemonManagerUnit;
+
+interface
+
+uses
+  System.Classes, System.SysUtils, System.Types, System.Generics.Collections, System.UITypes,
+  FMX.Types, FMX.Forms, FMX.Controls, FMX.Objects, FMX.Graphics, FMX.StdCtrls,
+  PlayerUnit, ObstacleManagerUnit, ObstacleUnit, System.Math, FMX.Utils,
+  BackgroundLayerUnit, ErrorHandlerUnit, GameConfigUnit, AssetManagerUnit, RemotePlayerRendererUnit, GameNetworkSyncUnit;
+
+type
+
+  TDemonState = (
+    dsHidden,
+    dsMovingUp,
+    dsShowing,
+    dsMovingDown
+  );
+
+  TDemonManager = class
+    public
+      d_demonState: TDemonState;
+      d_imgDemon: TImage;
+      d_demonFrameIndex: Integer;
+      d_demonAnimTimer: Single;
+      d_demonX: Single;
+      d_demonY: Single;
+      d_demonW: Single;
+      d_demonH: Single;
+      d_nextDemonMeter: Single;
+      d_assets: TAssetManager;
+      procedure ChangeDemonState(const ANewState: TDemonState);
+      procedure StartDemonEvent(const AParent: TControl);
+      procedure UpdateDemon(const ADeltaTime: Single; const AParent: TControl);
+      constructor Create;
+      destructor Destroy; override;
+   //   procedure Initialize;
+    private
+
+
+  end;
+
+
+implementation
+
+constructor TDemonManager.Create;
+begin
+  d_imgDemon := nil;
+  d_demonState := dsHidden;
+  d_demonFrameIndex := 0;
+  d_demonAnimTimer := 0;
+  d_demonW := TGameConfig.DEMON_WIDTH;
+  d_demonH := TGameConfig.DEMON_HEIGHT;
+  d_nextDemonMeter := TGameConfig.DEMON_FIRST_METER;
+
+end;
+
+destructor TDemonManager.Destroy;
+begin
+
+end;
+
+procedure TDemonManager.ChangeDemonState(const ANewState: TDemonState);
+begin
+  try
+    if d_demonState = ANewState then
+      Exit;
+
+    d_demonState := ANewState;
+
+    case d_demonState of
+      dsHidden:
+        begin
+          // hide demon and reset animation
+          d_demonFrameIndex := 0;
+          d_demonAnimTimer := 0;
+
+          if Assigned(d_imgDemon) then
+            d_imgDemon.Visible := False;
+        end;
+
+      dsMovingUp:
+        begin
+          // demon starts below the screen and moves up
+          d_demonFrameIndex := 0;
+          d_demonAnimTimer := 0;
+
+          if Assigned(d_imgDemon) then
+            d_imgDemon.Visible := True;
+        end;
+
+      dsShowing:
+        begin
+          // demon is in the middle and keeps playing animation
+        end;
+
+      dsMovingDown:
+        begin
+          // demon moves down until it leaves the screen
+        end;
+    end;
+  except
+    on E: Exception do
+      TErrorHandler.ReportError('demon change state error: ' + E.Message);
+  end;
+end;
+
+procedure TDemonManager.StartDemonEvent(const AParent: TControl);
+begin
+  try
+    if not Assigned(AParent) then
+      Exit;
+
+    // place demon in the horizontal center
+    d_demonX := (AParent.Width - d_demonW) / 2;
+
+    // start below the screen
+    d_demonY := AParent.Height;
+
+    d_demonFrameIndex := 0;
+    d_demonAnimTimer := 0;
+
+    if Assigned(d_imgDemon) then
+    begin
+      d_imgDemon.Width := d_demonW;
+      d_imgDemon.Height := d_demonH;
+      d_imgDemon.Position.X := d_demonX;
+      d_imgDemon.Position.Y := d_demonY;
+      d_imgDemon.Visible := True;
+    end;
+
+    // set next meter moment for the next demon event
+    d_nextDemonMeter := d_nextDemonMeter + TGameConfig.DEMON_INTERVAL_METER;
+
+    ChangeDemonState(dsMovingUp);
+  except
+    on E: Exception do
+      TErrorHandler.ReportError('start demon event error: ' + E.Message);
+  end;
+end;
+
+procedure TDemonManager.UpdateDemon(const ADeltaTime: Single; const AParent: TControl);
+var
+  TargetY: Single;
+begin
+  try
+    if ADeltaTime <= 0 then
+      Exit;
+
+    if not Assigned(AParent) then
+      Exit;
+
+    if d_demonState = dsHidden then
+      Exit;
+
+    // keep demon centered when the screen size changes
+    d_demonX := (AParent.Width - d_demonW) / 2;
+
+    // middle y position of the screen
+    TargetY := (AParent.Height - d_demonH) / 2;
+
+    // update animation timer
+    d_demonAnimTimer := d_demonAnimTimer + ADeltaTime;
+
+    if d_demonAnimTimer >= TGameConfig.DEMON_ANIM_SPEED then
+    begin
+      if d_demonFrameIndex < d_assets.DemonFrames.Count - 1 then
+        Inc(d_demonFrameIndex);
+
+      d_demonAnimTimer := 0;
+    end;
+
+    case d_demonState of
+      dsMovingUp:
+        begin
+          // move demon up until it reaches the middle
+          d_demonY := d_demonY - (TGameConfig.DEMON_MOVE_SPEED * ADeltaTime);
+
+          if d_demonY <= TargetY then
+          begin
+            d_demonY := TargetY;
+            ChangeDemonState(dsShowing);
+          end;
+        end;
+
+      dsShowing:
+        begin
+          // wait until the animation reaches the frame where demon must leave
+          if d_demonFrameIndex >= TGameConfig.DEMON_MOVE_DOWN_FRAME then
+            ChangeDemonState(dsMovingDown);
+        end;
+
+      dsMovingDown:
+        begin
+          // move demon down until it is outside the screen
+          d_demonY := d_demonY + (TGameConfig.DEMON_MOVE_SPEED * ADeltaTime);
+
+          if d_demonY > AParent.Height then
+            ChangeDemonState(dsHidden);
+        end;
+    end;
+
+    if Assigned(d_imgDemon) then
+    begin
+      d_imgDemon.Position.X := d_demonX;
+      d_imgDemon.Position.Y := d_demonY;
+    end;
+  except
+    on E: Exception do
+      TErrorHandler.ReportError('update demon error: ' + E.Message);
+  end;
+end;
+
+end.

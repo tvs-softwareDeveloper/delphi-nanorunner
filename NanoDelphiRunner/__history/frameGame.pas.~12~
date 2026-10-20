@@ -1,0 +1,67 @@
+unit frameGame;
+
+interface
+
+uses
+  System.SysUtils, System.Types, System.UITypes, System.Classes,
+  FMX.Types, FMX.Controls, FMX.Forms, FMX.StdCtrls,
+  FMX.Controls.Presentation, FMX.Objects;
+
+type
+  TFrame1 = class(TFrame)
+    imgBackground1: TImage;
+    imgBackground2: TImage;
+    imgBackground3: TImage;
+
+    imgPlayer: TImage;
+    imgObstacle1: TImage;
+
+    lblScore: TLabel;
+    lblGameOver: TLabel;
+    btnRestart: TButton;
+
+    procedure btnRestartClick(Sender: TObject);
+
+  private
+    FOnRestart: TProc;
+
+  public
+    procedure SetScore(const AScore: Integer);
+    procedure ShowGameOver;
+    procedure HideGameOver;
+    procedure SetOnRestart(const ACallback: TProc);
+  end;
+
+implementation
+
+{$R *.fmx}
+
+procedure TFrame1.SetScore(const AScore: Integer);
+begin
+  lblScore.Text := 'Score: ' + AScore.ToString + ' m';
+end;
+
+procedure TFrame1.ShowGameOver;
+begin
+  lblGameOver.Visible := True;
+  btnRestart.Visible := True;
+end;
+
+procedure TFrame1.HideGameOver;
+begin
+  lblGameOver.Visible := False;
+  btnRestart.Visible := False;
+end;
+
+procedure TFrame1.SetOnRestart(const ACallback: TProc);
+begin
+  FOnRestart := ACallback;
+end;
+
+procedure TFrame1.btnRestartClick(Sender: TObject);
+begin
+  if Assigned(FOnRestart) then
+    FOnRestart;
+end;
+
+end.

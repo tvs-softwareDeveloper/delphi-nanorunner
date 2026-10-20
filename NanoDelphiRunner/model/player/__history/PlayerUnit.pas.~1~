@@ -1,0 +1,475 @@
+unit PlayerUnit;
+
+interface
+
+uses
+   System.Types, System.Classes, System.SysUtils, System.Math, FMX.Utils, ErrorHandlerUnit, GameConfigUnit;
+
+type
+  TPlayerState = (
+    psIdle,
+    psRunning,
+    psJumpStart,
+    psJumping,
+    psFalling,
+    psDead,
+    psJetpackUp,
+    psJetpackFlying
+  );
+
+  TPlayer = class
+  private
+    d_hasAirJumped: Boolean;
+    d_position: TPointF;
+    d_velocity: TPointF;
+    d_currentState: TPlayerState;
+    d_spriteIndex: Integer;
+    d_animationTimer: Single;
+    d_groundY: Single;
+    d_gravity: Single;
+    d_jumpSpeed: Single;
+
+    d_frameWidth: Integer;
+    d_frameHeight: Integer;
+    d_totalFrames: Integer;
+
+    d_isInAir: Boolean;
+    d_airTime: Single;
+    d_facingRight: Boolean;
+
+    // horizontal move values
+    d_velocityX: Single;
+    d_maxSpeed: Single;
+    d_acceleration: Single;
+    d_deceleration: Single;
+
+    // jetpack values
+    d_jetpackTimer: Single;
+    d_jetpackMaxTime: Single;
+    d_jetpackSpeedY: Single;
+    d_jetpackTargetY: Single;
+    d_jetpackMoveSpeed: Single;
+    d_speedMultiplier: Single;
+    d_speedBoostTimer: Single;
+
+  public
+    constructor Create;
+    procedure Update(const ADeltaTime: Single; MoveLeft, MoveRight, MoveUp, MoveDown: Boolean);
+    procedure ChangeState(const ANewState: TPlayerState);
+    procedure Jump;
+    function GetBounds: TRectF;
+    function GetCurrentSpriteIndex: Integer;
+    procedure SetPosition(const APosition: TPointF);
+    function GetPosition: TPointF;
+    procedure SetGroundY(const AValue: Single);
+    function GetIsInAir: Boolean;
+    function GetAirTime: Single;
+    function GetVelocityX: Single;
+    function GetFacingRight: Boolean;
+    property CurrentState: TPlayerState read d_currentState;
+    procedure StartJetpack(const ATargetY: Single);
+    function IsJetpackActive: Boolean;
+    function GetJetpackTimer: Single;
+    procedure StartSpeedBoost(const AMultiplier: Single);
+    procedure StopSpeedBoost;
+  end;
+
+implementation
+
+constructor TPlayer.Create;
+begin
+  inherited;
+  try
+
+  // set start values for the player
+  d_position := TPointF.Create(TGameConfig.PLAYER_START_X, TGameConfig.PLAYER_START_Y);
+  d_velocity := TPointF.Create(0, 0);
+  d_currentState := psIdle;
+  d_spriteIndex := 0;
+  d_animationTimer := 0;
+
+  // ground and jump settings
+  d_groundY := TGameConfig.PLAYER_START_Y;
+  d_gravity := TGameConfig.PLAYER_GRAVITY;
+  d_jumpSpeed := TGameConfig.PLAYER_JUMP_SPEED;
+
+  // sprite frame settings
+  d_frameWidth := TGameConfig.PLAYER_NORMAL_WIDTH;
+  d_frameHeight := TGameConfig.PLAYER_NORMAL_HEIGHT;
+  d_totalFrames := TGameConfig.PLAYER_TOTAL_FRAMES;
+
+  // movement start values
+  d_hasAirJumped := False;
+  d_velocityX := 0;
+
+  d_maxSpeed := TGameConfig.PLAYER_SPEED;
+  d_acceleration := TGameConfig.PLAYER_ACCELERATION;
+  d_deceleration := TGameConfig.PLAYER_DECELERATION;
+
+  d_isInAir := False;
+  d_airTime := 0;
+  d_facingRight := True;
+
+  // jetpack start values
+  d_jetpackTimer := 0;
+  d_jetpackTargetY := 0;
+  d_jetpackMaxTime := TGameConfig.JETPACK_MAX_TIME;
+  d_jetpackSpeedY := TGameConfig.JETPACK_UP_SPEED;
+  d_jetpackMoveSpeed := TGameConfig.JETPACK_MOVE_SPEED;
+
+  d_speedMultiplier := 1;
+  d_speedBoostTimer := 0;
+
+  except
+    on E: Exception do
+    begin
+      TErrorHandler.ReportError('player constructor error: ' + E.Message);
+    end;
+  end;
+end;
+
+procedure TPlayer.Update(const ADeltaTime: Single; MoveLeft, MoveRight, MoveUp, MoveDown: Boolean);
+begin
+  try
+    if d_speedBoostTimer > 0 then
+  begin
+    d_speedBoostTimer := d_speedBoostTimer - ADeltaTime;
+
+    if d_speedBoostTimer <= 0 then
+    begin
+      d_speedBoostTimer := 0;
+      d_speedMultiplier := 1;
+    end;
+  end;
+
+  d_maxSpeed := TGameConfig.PLAYER_SPEED * d_speedMultiplier;
+
+  // jetpack has its own movement, so normal walking and jumping is skipped
+  if d_currentState in [psJetpackUp, psJetpackFlying] then
+  begin
+    // count how long the jetpack has been active
+    d_jetpackTimer := d_jetpackTimer + ADeltaTime;
+
+    // stop jetpack when the max time is reached
+    if d_jetpackTimer >= d_jetpackMaxTime then
+    begin
+      ChangeState(psFalling);
+      Exit;
+    end;
+
+    // make the player move faster forward while using the jetpack
+    d_velocityX := d_maxSpeed * TGameConfig.JETPACK_SPEED_MULTIPLIER;
+
+    if d_currentState = psJetpackUp then
+    begin
+      // move player to the right
+      // speed times delta time makes movement smooth on al frame rates
+      d_position.X := d_position.X + d_velocityX * ADeltaTime;
+
+      // move player up
+      // y goes down when the value gets bigger, so minus means moving up
+      d_position.Y := d_position.Y - d_jetpackSpeedY * ADeltaTime;
+
+      // when target height is reached, stop going up and start flying forward
+      if d_position.Y <= d_jetpackTargetY then
+      begin
+        d_position.Y := d_jetpackTargetY;
+        ChangeState(psJetpackFlying);
+      end;
+
+      Exit;
+    end;
+
+    if d_currentState = psJetpackFlying then
+    begin
+      // keep moving right while flying
+      d_position.X := d_position.X + d_velocityX * ADeltaTime;
+
+      // move up or down while flying with the jetpack
+      if MoveUp and not MoveDown then
+        d_position.Y := d_position.Y - d_jetpackMoveSpeed * ADeltaTime
+      else if MoveDown and not MoveUp then
+        d_position.Y := d_position.Y + d_jetpackMoveSpeed * ADeltaTime;
+
+      Exit;
+    end;
+  end;
+
+  // do not move the player when dead
+  if d_currentState <> psDead then
+  begin
+    // speed up to the left
+    if MoveLeft and not MoveRight then
+      d_velocityX := d_velocityX - d_acceleration * ADeltaTime
+
+    // speed up to the right
+    else if MoveRight and not MoveLeft then
+      d_velocityX := d_velocityX + d_acceleration * ADeltaTime
+    else
+    begin
+      // slow down smoothly when no left or right key is pressed
+      if d_velocityX > 0 then
+        d_velocityX := Max(0, d_velocityX - d_deceleration * ADeltaTime)
+      else if d_velocityX < 0 then
+        d_velocityX := Min(0, d_velocityX + d_deceleration * ADeltaTime);
+    end;
+
+    // keep speed between max left speed and max right speed
+    d_velocityX := EnsureRange(d_velocityX, -d_maxSpeed, d_maxSpeed);
+
+    // save the direction the player is looking at
+    if d_velocityX > 5 then
+      d_facingRight := True
+    else if d_velocityX < -5 then
+      d_facingRight := False;
+  end;
+
+  // move the player on the x axis
+  // this also keeps movement going in the air after a jump
+  d_position.X := d_position.X + d_velocityX * ADeltaTime;
+
+  // only switch idle and run when player is not jumping, falling or dead
+  if not (d_currentState in [psJumpStart, psJumping, psFalling, psDead]) then
+  begin
+    if Abs(d_velocityX) > 5 then
+    begin
+      if d_currentState <> psRunning then
+        ChangeState(psRunning);
+    end
+    else
+    begin
+      if d_currentState <> psIdle then
+        ChangeState(psIdle);
+    end;
+  end;
+
+  // update running animation
+  if d_currentState = psRunning then
+  begin
+    d_animationTimer := d_animationTimer + ADeltaTime;
+
+    // go to the next frame when enough time has passed
+    if d_animationTimer >= TGameConfig.PLAYER_RUN_ANIM_SPEED then
+    begin
+      d_spriteIndex := (d_spriteIndex + 1) mod d_totalFrames;
+      d_animationTimer := 0;
+    end;
+  end;
+
+  // update jump and fall movement
+  if d_currentState in [psJumping, psFalling] then
+  begin
+    // count how long the player has been in the air
+    d_airTime := d_airTime + ADeltaTime;
+
+    // gravity makes the player fall faster over time
+    d_velocity.Y := d_velocity.Y + (d_gravity * ADeltaTime);
+
+    // move player on the y axis with the current fall or jump speed
+    d_position.Y := d_position.Y + (d_velocity.Y * ADeltaTime);
+
+    // check if player touched the ground
+    if d_position.Y >= d_groundY then
+    begin
+      // place player exactly on the ground so it does not sink below it
+      d_position.Y := d_groundY;
+      d_velocity.Y := 0;
+      d_isInAir := False;
+      d_airTime := 0;
+      d_hasAirJumped := False;
+
+      // after landing, choose idle or running based on x speed
+      if Abs(d_velocityX) > 5 then
+        ChangeState(psRunning)
+      else
+        ChangeState(psIdle);
+    end
+    else if d_velocity.Y > 0 then
+    begin
+      // when y speed becomes positive, the player is going down
+      if d_currentState = psJumping then
+        ChangeState(psFalling);
+    end;
+  end;
+  except
+    on E: Exception do
+    begin
+      TErrorHandler.ReportError('player update error: ' + E.Message);
+    end;
+  end;
+end;
+
+procedure TPlayer.ChangeState(const ANewState: TPlayerState);
+begin
+  try
+  // do nothing if the player is already in this state
+  if d_currentState = ANewState then
+    Exit;
+
+  d_currentState := ANewState;
+  d_animationTimer := 0;
+
+  case ANewState of
+    psJumpStart:
+      begin
+        // give the player a strong up speed
+        // the value is negative because a lower y value means higher on screen
+        d_velocity.Y := d_jumpSpeed;
+        d_isInAir := True;
+        d_airTime := 0;
+
+        // after setting jump speed, go to the real jump state
+        ChangeState(psJumping);
+      end;
+
+    psRunning:
+      begin
+        // reset run animation and air values after landing or starting to run
+        d_spriteIndex := 0;
+        d_isInAir := False;
+        d_airTime := 0;
+        d_hasAirJumped := False;
+      end;
+
+    psDead:
+      begin
+        // stop all movement when player dies
+        d_velocity := TPointF.Create(0, 0);
+        d_isInAir := False;
+        d_airTime := 0;
+      end;
+  end;
+  except
+    on E: Exception do
+    begin
+      TErrorHandler.ReportError('player change state error: ' + E.Message);
+    end;
+  end;
+end;
+
+procedure TPlayer.Jump;
+begin
+  try
+  // normal jump from the ground
+  if d_currentState in [psIdle, psRunning] then
+  begin
+    ChangeState(psJumpStart);
+    d_hasAirJumped := False;
+  end
+
+  // air jump, only allowed one time before landing
+  else if (d_currentState in [psJumping, psFalling]) and not d_hasAirJumped then
+  begin
+    ChangeState(psJumpStart);
+    d_hasAirJumped := True;
+  end;
+  except
+    on E: Exception do
+    begin
+      TErrorHandler.ReportError('player jump error: ' + E.Message);
+    end;
+  end;
+end;
+
+procedure TPlayer.StartJetpack(const ATargetY: Single);
+begin
+  try
+  // save the height the player must fly to
+  d_jetpackTargetY := ATargetY;
+
+  // reset jetpack time
+  d_jetpackTimer := 0;
+
+  // stop normal y movement before jetpack starts
+  d_velocity.Y := 0;
+
+  d_isInAir := True;
+  ChangeState(psJetpackUp);
+  except
+    on E: Exception do
+    begin
+      TErrorHandler.ReportError('player startjetpack error: ' + E.Message);
+    end;
+  end;
+end;
+
+procedure TPlayer.StartSpeedBoost(const AMultiplier: Single);
+begin
+  try
+    d_speedMultiplier := AMultiplier;
+    d_speedBoostTimer := TGameConfig.REDBULL_BOOST_TIME;
+  except
+    on E: Exception do
+      TErrorHandler.ReportError('player speed boost error: ' + E.Message);
+  end;
+end;
+
+procedure TPlayer.StopSpeedBoost;
+begin
+  d_speedMultiplier := 1;
+  d_speedBoostTimer := 0;
+end;
+
+//////////////////////////////////////////////////////////////////// setters getters ////////////////////////////////////////////////////////////////////////////////
+function TPlayer.IsJetpackActive: Boolean;
+begin
+  Result := d_currentState in [psJetpackUp, psJetpackFlying];
+end;
+
+function TPlayer.GetJetpackTimer: Single;
+begin
+  Result := d_jetpackTimer;
+end;
+
+function TPlayer.GetBounds: TRectF;
+begin
+  // make the hitbox a bit smaller than the sprite
+  Result := TRectF.Create(
+    d_position.X + 10,
+    d_position.Y + 5,
+    d_position.X + d_frameWidth - 10,
+    d_position.Y + d_frameHeight - 5
+  );
+end;
+
+function TPlayer.GetCurrentSpriteIndex: Integer;
+begin
+  Result := d_spriteIndex;
+end;
+
+procedure TPlayer.SetPosition(const APosition: TPointF);
+begin
+  d_position := APosition;
+end;
+
+function TPlayer.GetPosition: TPointF;
+begin
+  Result := d_position;
+end;
+
+procedure TPlayer.SetGroundY(const AValue: Single);
+begin
+  d_groundY := AValue;
+end;
+
+function TPlayer.GetIsInAir: Boolean;
+begin
+  Result := d_isInAir;
+end;
+
+function TPlayer.GetAirTime: Single;
+begin
+  Result := d_airTime;
+end;
+
+function TPlayer.GetVelocityX: Single;
+begin
+  Result := d_velocityX;
+end;
+
+function TPlayer.GetFacingRight: Boolean;
+begin
+  Result := d_facingRight;
+end;
+
+end.

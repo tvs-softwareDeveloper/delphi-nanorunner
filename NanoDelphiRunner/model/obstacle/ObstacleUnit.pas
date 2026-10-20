@@ -1,0 +1,523 @@
+unit ObstacleUnit;
+
+interface
+
+uses
+  System.Types, System.Classes, System.SysUtils, System.Math, ErrorHandlerUnit, GameConfigUnit;
+
+// obstacle types
+type
+  TObstacleKind = (
+    okNormal,
+    okPotato,
+    okDragon,
+    okRedbull,
+    okAlien
+  );
+
+  TObstacleState = (
+    osSpawning,
+    osMoving,
+    osRemoteSync,
+    osCollected,
+    osRemoved
+  );
+
+  TObstacle = class
+
+  private
+    d_position: TPointF;
+    d_size: TSizeF; // size used for drawing and collision
+    d_speed: Single; // movement speed in pixels per second
+    d_frameIndex: Integer;
+    d_animTimer: Single; // timer for animation frame changes
+    d_totalFrames: Integer;
+    d_kind: TObstacleKind;
+
+    // target position from the network
+    // this is used to make remote obstacles move smooth
+    d_remoteTarget: TPointF;
+    d_hasRemoteTarget: Boolean;
+    d_netId: Integer;
+    d_state: TObstacleState;
+
+  public
+    constructor Create;
+    function GetHitBoxes: TArray<TRectF>;
+    procedure SetKind(const AKind: TObstacleKind);
+    function GetKind : TObstacleKind;
+    procedure SetSize(const AWidth, AHeight: Single);
+    procedure SetFrameIndex(const AValue: Integer);
+    procedure Initialize(const APosition: TPointF; const ASpeed: Single);
+    procedure Update(const ADeltaTime: Single);
+    function GetBounds: TRectF;
+    function IsOffScreen: Boolean;
+    function GetPosition: TPointF;
+    procedure SetPosition(const APosition: TPointF);
+    function GetFrameIndex: Integer;
+    procedure AddOffsetX(const AValue: Single);
+    procedure SetTotalFrames(const ACount: Integer);
+    function GetSize: TSizeF;
+    procedure SetRemoteTarget(const APosition: TPointF);
+    procedure UpdateRemoteSmooth(const ADeltaTime: Single);
+    function HasRemoteTarget : Boolean;
+    procedure SetNetId(const AValue: Integer);
+    function GetNetId: Integer;
+    procedure ChangeState(const ANewState: TObstacleState);
+    function GetState: TObstacleState;
+    function CanCollide: Boolean;
+    function CanBeRemoved: Boolean;
+    procedure MarkCollected;
+    procedure MarkRemoved;
+  end;
+
+implementation
+
+constructor TObstacle.Create;
+begin
+  inherited;
+
+  try
+    // set safe start values for a new obstacle
+    d_position := TPointF.Create(0, 0);
+    d_size := TSizeF.Create(TGameConfig.OBSTACLE_NORMAL_WIDTH, TGameConfig.OBSTACLE_NORMAL_HEIGHT);
+    d_speed := TGameConfig.OBSTACLE_SPEED;
+    d_frameIndex := 0;
+    d_animTimer := 0;
+    d_totalFrames := 1;
+    d_kind := okNormal;
+    d_netId := 0;
+    d_remoteTarget := d_position;
+    d_hasRemoteTarget := False;
+    d_state := osRemoved;
+  except
+    on E: Exception do
+      TErrorHandler.ReportError('obstacle constructor error: ' + E.Message);
+  end;
+end;
+
+procedure TObstacle.Initialize(const APosition: TPointF; const ASpeed: Single);
+begin
+  try
+    // reset the obstacle so it can also be reused from the pool
+    d_position := APosition;
+    d_speed := ASpeed;
+    d_size := TSizeF.Create(TGameConfig.OBSTACLE_NORMAL_WIDTH, TGameConfig.OBSTACLE_NORMAL_HEIGHT);
+    d_frameIndex := 0;
+    d_animTimer := 0;
+    d_totalFrames := 1;
+    d_kind := okNormal;
+    d_remoteTarget := APosition;
+    d_hasRemoteTarget := False;
+
+    // a new obstacle starts active and moves normally
+    ChangeState(osSpawning);
+  except
+    on E: Exception do
+      TErrorHandler.ReportError('obstacle initialize error: ' + E.Message);
+  end;
+end;
+
+procedure TObstacle.ChangeState(const ANewState: TObstacleState);
+begin
+  try
+    if d_state = ANewState then
+      Exit;
+
+    d_state := ANewState;
+
+    case d_state of
+      osSpawning:
+        begin
+          // reset animation when the obstacle starts
+          d_animTimer := 0;
+          d_frameIndex := 0;
+        end;
+
+      osMoving:
+        begin
+          // normal obstacle movement
+          d_hasRemoteTarget := False;
+        end;
+
+      osRemoteSync:
+        begin
+          // remote obstacle follows server position
+          d_hasRemoteTarget := True;
+        end;
+
+      osCollected:
+        begin
+          // collected obstacles should not hit the player again
+          d_hasRemoteTarget := False;
+        end;
+
+      osRemoved:
+        begin
+          // removed obstacles are ready to go back to the pool
+          d_hasRemoteTarget := False;
+        end;
+    end;
+  except
+    on E: Exception do
+      TErrorHandler.ReportError('obstacle change state error: ' + E.Message);
+  end;
+end;
+
+procedure TObstacle.Update(const ADeltaTime: Single);
+var
+  AnimSpeed: Single;
+begin
+  try
+    if ADeltaTime <= 0 then
+      Exit;
+
+    // removed or collected obstacles do not move anymore
+    if d_state in [osRemoved, osCollected] then
+      Exit;
+
+    // remote obstacles are updated by update remote smooth
+    if d_state = osRemoteSync then
+    begin
+      UpdateRemoteSmooth(ADeltaTime);
+      Exit;
+    end;
+
+    // normal moving obstacle goes to the left
+    if d_state in [osSpawning, osMoving] then
+      d_position.X := d_position.X - (d_speed * ADeltaTime);
+
+    case d_kind of
+      okDragon:
+        AnimSpeed := TGameConfig.DRAGON_ANIM_SPEED;
+
+      okPotato:
+        AnimSpeed := TGameConfig.POTATO_ANIM_SPEED;
+    else
+      AnimSpeed := TGameConfig.NORMAL_OBSTACLE_ANIM_SPEED;
+    end;
+
+    d_animTimer := d_animTimer + ADeltaTime;
+
+    while d_animTimer >= AnimSpeed do
+    begin
+      d_frameIndex := (d_frameIndex + 1) mod Max(1, d_totalFrames);
+      d_animTimer := d_animTimer - AnimSpeed;
+    end;
+
+    // after the first update it is just moving
+    if d_state = osSpawning then
+      ChangeState(osMoving);
+  except
+    on E: Exception do
+      TErrorHandler.ReportError('obstacle update error: ' + E.Message);
+  end;
+end;
+
+function TObstacle.HasRemoteTarget: Boolean;
+begin
+  Result := d_hasRemoteTarget;
+end;
+
+procedure TObstacle.AddOffsetX(const AValue: Single);
+begin
+  // add extra movement on the x axis
+  // this is used when the world scrolls
+  // the player can stay near the middle while the world moves
+  d_position.X := d_position.X + AValue;
+end;
+
+function TObstacle.IsOffScreen: Boolean;
+begin
+  Result := False;
+
+  try
+    // collected and removed obstacles may be cleaned up by the manager
+    if d_state in [osCollected, osRemoved] then
+      Exit(True);
+
+    Result := d_position.X < -d_size.Width;
+  except
+    on E: Exception do
+      TErrorHandler.ReportError('obstacle off screen error: ' + E.Message);
+  end;
+end;
+
+procedure TObstacle.UpdateRemoteSmooth(const ADeltaTime: Single);
+var
+  SmoothAmount: Single;
+  AnimSpeed: Single;
+begin
+  try
+    // stop if delta time is not valid
+    if ADeltaTime <= 0 then
+      Exit;
+
+    // removed or collected obstacles should not update anymore
+    if d_state in [osRemoved, osCollected] then
+      Exit;
+
+    // make sure this obstacle is in remote sync state
+    if d_state <> osRemoteSync then
+      ChangeState(osRemoteSync);
+
+    // keep world movement to the left so it matches local obstacles
+    d_position.X := d_position.X - (d_speed * ADeltaTime);
+
+    // move smoothly toward the position received from the server
+    if d_hasRemoteTarget then
+    begin
+      // control how fast we move toward the target
+      // higher value means faster follow
+      SmoothAmount := Min(1, ADeltaTime * TGameConfig.REMOTE_OBSTACLE_SMOOTH_SPEED);
+
+      // move a small part toward the target each frame
+      d_position.X := d_position.X + ((d_remoteTarget.X - d_position.X) * SmoothAmount);
+      d_position.Y := d_position.Y + ((d_remoteTarget.Y - d_position.Y) * SmoothAmount);
+    end;
+
+    // pick animation speed based on obstacle type
+    case d_kind of
+      okDragon:
+        AnimSpeed := TGameConfig.DRAGON_ANIM_SPEED;
+
+      okPotato:
+        AnimSpeed := TGameConfig.POTATO_ANIM_SPEED;
+    else
+      AnimSpeed := TGameConfig.NORMAL_OBSTACLE_ANIM_SPEED;
+    end;
+
+    // add time to animation timer
+    d_animTimer := d_animTimer + ADeltaTime;
+
+    // update animation frames, use while for slow frames
+    while d_animTimer >= AnimSpeed do
+    begin
+      // go to next frame and loop back if needed
+      d_frameIndex := (d_frameIndex + 1) mod Max(1, d_totalFrames);
+
+      // keep leftover time for smooth animation
+      d_animTimer := d_animTimer - AnimSpeed;
+    end;
+  except
+    on E: Exception do
+      TErrorHandler.ReportError('obstacle update remote smooth error: ' + E.Message);
+  end;
+end;
+
+//////////////////////////////////////////////////////////////////// setters getters ////////////////////////////////////////////////////////////////////////////////
+
+function TObstacle.GetBounds: TRectF;
+begin
+  // create one full rectangle around the obstacle
+  // left is x
+  // top is y
+  // right is x plus width
+  // bottom is y plus height
+  Result := TRectF.Create(
+    d_position.X,
+    d_position.Y,
+    d_position.X + d_size.Width,
+    d_position.Y + d_size.Height
+  );
+end;
+
+procedure TObstacle.SetTotalFrames(const ACount: Integer);
+begin
+  d_totalFrames := Max(1, ACount);
+end;
+
+function TObstacle.GetPosition: TPointF;
+begin
+  Result := d_position;
+end;
+
+function TObstacle.GetFrameIndex: Integer;
+begin
+  Result := d_frameIndex;
+end;
+
+procedure TObstacle.SetPosition(const APosition: TPointF);
+begin
+  d_position := APosition;
+end;
+
+procedure TObstacle.SetKind(const AKind: TObstacleKind);
+begin
+  d_kind := AKind;
+end;
+
+function TObstacle.GetKind: TObstacleKind;
+begin
+  Result := d_kind;
+end;
+
+procedure TObstacle.SetSize(const AWidth, AHeight: Single);
+begin
+  d_size := TSizeF.Create(AWidth, AHeight);
+end;
+
+function TObstacle.GetSize: TSizeF;
+begin
+  Result := d_size;
+end;
+
+procedure TObstacle.SetFrameIndex(const AValue: Integer);
+begin
+  d_frameIndex := AValue;
+end;
+
+function TObstacle.GetHitBoxes: TArray<TRectF>;
+begin
+  case d_kind of
+    okDragon:
+      begin
+        // dragon has 3 smaller hitboxes
+        // this makes collision feel more fair
+        // transparent space around the sprite will not count as hit
+        SetLength(Result, 3);
+
+        // head hitbox
+        // x plus width times 0.68 means start at 68 percent of the sprite width
+        // y plus height times 0.25 means start at 25 percent of the sprite height
+        Result[0] := TRectF.Create(
+          d_position.X + d_size.Width * 0.68,
+          d_position.Y + d_size.Height * 0.25,
+          d_position.X + d_size.Width * 0.95,
+          d_position.Y + d_size.Height * 0.55
+        );
+
+        // middle body hitbox
+        // this box covers the main body part of the dragon
+        Result[1] := TRectF.Create(
+          d_position.X + d_size.Width * 0.32,
+          d_position.Y + d_size.Height * 0.35,
+          d_position.X + d_size.Width * 0.72,
+          d_position.Y + d_size.Height * 0.65
+        );
+
+        // tail body hitbox
+        // this box is smaller because the tail is thinner
+        Result[2] := TRectF.Create(
+          d_position.X + d_size.Width * 0.08,
+          d_position.Y + d_size.Height * 0.42,
+          d_position.X + d_size.Width * 0.35,
+          d_position.Y + d_size.Height * 0.62
+        );
+      end;
+
+    okPotato:
+      begin
+        // potato uses one smaller box inside the sprite
+        SetLength(Result, 1);
+
+        // start at 18 percent from left and top
+        // end at 82 percent from left and top
+        // this cuts away empty edges around the sprite
+        Result[0] := TRectF.Create(
+          d_position.X + d_size.Width * 0.18,
+          d_position.Y + d_size.Height * 0.18,
+          d_position.X + d_size.Width * 0.82,
+          d_position.Y + d_size.Height * 0.82
+        );
+      end;
+
+      okRedbull:
+      begin
+        // potato uses one smaller box inside the sprite
+        SetLength(Result, 1);
+
+        // start at 18 percent from left and top
+        // end at 82 percent from left and top
+        // this cuts away empty edges around the sprite
+        Result[0] := TRectF.Create(
+          d_position.X + d_size.Width * 0.18,
+          d_position.Y + d_size.Height * 0.18,
+          d_position.X + d_size.Width * 0.82,
+          d_position.Y + d_size.Height * 0.82
+        );
+      end;
+
+      okAlien:
+      begin
+        SetLength(Result, 1);
+
+        Result[0] := TRectF.Create(
+          d_position.X + d_size.Width * 0.30,
+          d_position.Y + d_size.Height * 0.55,
+          d_position.X + d_size.Width * 0.70,
+          d_position.Y + d_size.Height * 0.95
+        );
+      end;
+
+  else
+    begin
+      // normal obstacle uses one simple hitbox
+      SetLength(Result, 1);
+
+      // this box is a bit smaller than the full sprite
+      // left starts at 15 percent of the width
+      // top starts at 10 percent of the height
+      // right ends at 85 percent of the width
+      // bottom ends at 90 percent of the height
+      Result[0] := TRectF.Create(
+        d_position.X + d_size.Width * 0.15,
+        d_position.Y + d_size.Height * 0.10,
+        d_position.X + d_size.Width * 0.85,
+        d_position.Y + d_size.Height * 0.90
+      );
+    end;
+  end;
+end;
+
+procedure TObstacle.SetRemoteTarget(const APosition: TPointF);
+begin
+  try
+    // save the newest position from the host
+    d_remoteTarget := APosition;
+    d_hasRemoteTarget := True;
+
+    // this obstacle is now controlled by network data
+    ChangeState(osRemoteSync);
+  except
+    on E: Exception do
+      TErrorHandler.ReportError('obstacle set remote target error: ' + E.Message);
+  end;
+end;
+
+procedure TObstacle.SetNetId(const AValue: Integer);
+begin
+  d_netId := AValue;
+end;
+
+function TObstacle.GetNetId: Integer;
+begin
+  Result := d_netId;
+end;
+
+function TObstacle.GetState: TObstacleState;
+begin
+  Result := d_state;
+end;
+
+function TObstacle.CanCollide: Boolean;
+begin
+  Result := d_state in [osSpawning, osMoving, osRemoteSync];
+end;
+
+function TObstacle.CanBeRemoved: Boolean;
+begin
+  Result := d_state in [osCollected, osRemoved];
+end;
+
+procedure TObstacle.MarkCollected;
+begin
+  ChangeState(osCollected);
+end;
+
+procedure TObstacle.MarkRemoved;
+begin
+  ChangeState(osRemoved);
+end;
+
+end.

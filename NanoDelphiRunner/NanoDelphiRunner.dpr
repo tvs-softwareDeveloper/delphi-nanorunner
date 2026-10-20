@@ -1,0 +1,34 @@
+program NanoDelphiRunner;
+
+uses
+  System.StartUpCopy,
+  FMX.Forms,
+  frmMainUnit in 'model\UI\frmMainUnit.pas' {frmMain},
+  GameEngine in 'model\engine\GameEngine.pas',
+  PlayerUnit in 'model\player\PlayerUnit.pas',
+  BackgroundLayerUnit in 'model\graphics\BackgroundLayerUnit.pas',
+  ObstacleManagerUnit in 'model\obstacle\ObstacleManagerUnit.pas',
+  InputStateUnit in 'model\player\InputStateUnit.pas',
+  ObstacleUnit in 'model\obstacle\ObstacleUnit.pas',
+  frameGame in 'model\UI\frameGame.pas' {Frame1: TFrame},
+  frameLobby in 'model\UI\frameLobby.pas' {Frame2: TFrame},
+  GameServerUnit in 'model\network\GameServerUnit.pas',
+  ErrorHandlerUnit in 'model\handlers\ErrorHandlerUnit.pas',
+  UIScreenUnit in 'model\UI\UIScreenUnit.pas',
+  GameConfigUnit in 'model\engine\GameConfigUnit.pas',
+  AssetManagerUnit in 'model\graphics\AssetManagerUnit.pas',
+  GameStateUnit in 'model\engine\GameStateUnit.pas',
+  GameNetworkSyncUnit in 'model\network\GameNetworkSyncUnit.pas',
+  BackgroundManagerUnit in 'model\graphics\BackgroundManagerUnit.pas',
+  RemotePlayerRendererUnit in 'model\player\RemotePlayerRendererUnit.pas',
+  GameRendererUnit in 'model\graphics\GameRendererUnit.pas',
+  DemonManagerUnit in 'model\demon\DemonManagerUnit.pas',
+  MoonTreeManagerUnit in 'model\graphics\MoonTreeManagerUnit.pas';
+
+{$R *.res}
+
+begin
+  Application.Initialize;
+  Application.CreateForm(TfrmMain, frmMain);
+  Application.Run;
+end.

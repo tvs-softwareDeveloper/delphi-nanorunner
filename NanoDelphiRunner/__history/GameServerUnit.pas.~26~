@@ -1,0 +1,914 @@
+﻿unit GameServerUnit;
+
+interface
+
+uses
+  System.SysUtils, System.Classes, System.SyncObjs,
+  IdTCPServer, IdTCPClient, IdContext, ErrorHandlerUnit, GameConfigUnit;
+
+type
+  // this is the event type used by the client
+  // the form uses this to receive text messages from the server
+  TServerMessageEvent = procedure(const AMessage: string) of object;
+
+  TServerErrorEvent = procedure(const AError: string) of object;
+
+  TNetworkState = (
+    nsDisconnected,
+    nsConnected,
+    nsInLobby,
+    nsHost,
+    nsClient,
+    nsPlaying
+  );
+
+  // this stores data for one connected player
+  TClientInfo = class
+  public
+    PlayerName: string;
+    State: TNetworkState;
+
+    function IsInLobby: Boolean;
+    function IsHost: Boolean;
+    function IsPlaying: Boolean;
+  end;
+
+  TSimpleGameServer = class
+  private
+    d_tcpServer: TIdTCPServer;
+    d_lock: TCriticalSection;
+    d_onError: TServerErrorEvent;
+
+    procedure ServerConnect(AContext: TIdContext);
+    procedure ServerDisconnect(AContext: TIdContext);
+    procedure ServerExecute(AContext: TIdContext);
+
+    procedure SendLine(AContext: TIdContext; const AText: string);
+    procedure BroadcastLobby;
+    procedure BroadcastSessions;
+    procedure DisconnectContext(AContext: TIdContext);
+    function CountClients: Integer;
+    function CountLobbyPlayers: Integer;
+    function CleanPlayerName(const AName: string): string;
+    function GetSessionText: string;
+    function GetLobbyPlayersText: string;
+    procedure BroadcastHost;
+    function GetCurrentHostName: string;
+    procedure EnsureHost;
+
+  public
+    constructor Create;
+    destructor Destroy; override;
+
+    function Start(const APort: Integer): Boolean;
+    procedure Stop;
+
+    property OnError: TServerErrorEvent read d_onError write d_onError;
+  end;
+
+  TSimpleGameClient = class
+  private
+    FTcpClient: TIdTCPClient;
+    FReaderThread: TThread;
+    FOnMessage: TServerMessageEvent;
+    FOnError: TServerErrorEvent;
+    FRunning: Boolean;
+
+    procedure ReaderLoop;
+    procedure QueueMessage(const AMessage: string);
+    procedure ReportError(const AError: string);
+
+  public
+    constructor Create;
+    destructor Destroy; override;
+
+    function Connect(const AHost: string; const APort: Integer): Boolean;
+    procedure Disconnect;
+    procedure SendLine(const AText: string);
+
+    property OnMessage: TServerMessageEvent read FOnMessage write FOnMessage;
+    property OnError: TServerErrorEvent read FOnError write FOnError;
+  end;
+
+implementation
+
+// this creates the server object
+// the server listens for clients and keeps track of lobby players
+constructor TSimpleGameServer.Create;
+begin
+  inherited;
+
+  // this lock makes sure two client threads do not change the lobby at the same time
+  d_lock := TCriticalSection.Create;
+
+  // this is the tcp server from indy
+  d_tcpServer := TIdTCPServer.Create(nil);
+  d_tcpServer.MaxConnections := TGameConfig.MAX_PLAYERS;
+
+  // these events run when a client connects, disconnects or sends a message
+  d_tcpServer.OnConnect := ServerConnect;
+  d_tcpServer.OnDisconnect := ServerDisconnect;
+  d_tcpServer.OnExecute := ServerExecute;
+end;
+
+// this frees the server and the lock
+destructor TSimpleGameServer.Destroy;
+begin
+  Stop;
+
+  FreeAndNil(d_tcpServer);
+  FreeAndNil(d_lock);
+
+  inherited;
+end;
+
+procedure TSimpleGameServer.DisconnectContext(AContext: TIdContext);
+begin
+  try
+    if Assigned(AContext) and Assigned(AContext.Connection) then
+      AContext.Connection.Disconnect;
+  except
+    on E: Exception do
+      TErrorHandler.ReportError('Client afsluiten fout: ' + E.Message);
+  end;
+end;
+
+function TSimpleGameServer.CountClients: Integer;
+var
+  List: TList;
+begin
+  Result := 0;
+
+  try
+    List := d_tcpServer.Contexts.LockList;
+    try
+      Result := List.Count;
+    finally
+      d_tcpServer.Contexts.UnlockList;
+    end;
+  except
+    on E: Exception do
+      TErrorHandler.ReportError('Client telling fout: ' + E.Message);
+  end;
+end;
+
+function TSimpleGameServer.CountLobbyPlayers: Integer;
+var
+  List: TList;
+  I: Integer;
+  Context: TIdContext;
+  Info: TClientInfo;
+begin
+  Result := 0;
+
+  try
+    List := d_tcpServer.Contexts.LockList;
+    try
+      for I := 0 to List.Count - 1 do
+      begin
+        Context := TIdContext(List[I]);
+
+        if Assigned(Context.Data) then
+        begin
+          Info := TClientInfo(Context.Data);
+
+          if Info.IsInLobby then
+            Inc(Result);
+        end;
+      end;
+    finally
+      d_tcpServer.Contexts.UnlockList;
+    end;
+  except
+    on E: Exception do
+      TErrorHandler.ReportError('Lobby telling fout: ' + E.Message);
+  end;
+end;
+
+function TSimpleGameServer.CleanPlayerName(const AName: string): string;
+var
+  I: Integer;
+  C: Char;
+begin
+  Result := Trim(AName);
+
+  if Result = '' then
+    Result := 'Player';
+
+  Result := Copy(Result, 1, TGameConfig.MAX_MESSAGE_LENGTH);
+
+  for I := 1 to Length(Result) do
+  begin
+    C := Result[I];
+
+    if not (C in ['a'..'z', 'A'..'Z', '0'..'9', ' ', '_']) then
+      Result[I] := '_';
+  end;
+end;
+
+// this starts the server on the given port
+// returns true when the server started
+// returns false when the port is already in use
+function TSimpleGameServer.Start(const APort: Integer): Boolean;
+begin
+  Result := False;
+
+  try
+    if d_tcpServer.Active then
+      d_tcpServer.Active := False;
+
+    // this is the port where clients connect to
+    d_tcpServer.DefaultPort := APort;
+
+    // this starts listening for clients
+    d_tcpServer.Active := True;
+
+    Result := True;
+  except
+    on E: Exception do
+    begin
+      TErrorHandler.ReportError('Server starten fout: ' + E.Message);
+      Result := False;
+    end;
+  end;
+end;
+
+// this stops the server
+procedure TSimpleGameServer.Stop;
+begin
+  try
+    if Assigned(d_tcpServer) and d_tcpServer.Active then
+      d_tcpServer.Active := False;
+  except
+    on E: Exception do
+      TErrorHandler.ReportError('Server stoppen fout: ' + E.Message);
+  end;
+end;
+
+// this runs when a client connects
+// every client gets its own TClientInfo object
+procedure TSimpleGameServer.ServerConnect(AContext: TIdContext);
+begin
+  try
+    if CountClients > TGameConfig.MAX_PLAYERS then
+    begin
+      SendLine(AContext, 'error|server_full');
+      DisconnectContext(AContext);
+      Exit;
+    end;
+
+    // AContext is one connected client
+    // Data is used to store our player info for that client
+    //AContext.Data := TClientInfo.Create;
+    AContext.Data := TClientInfo.Create;
+    TClientInfo(AContext.Data).PlayerName := 'Player';
+    TClientInfo(AContext.Data).State := nsConnected;
+  except
+    on E: Exception do
+    begin
+      TErrorHandler.ReportError('Client verbinden fout: ' + E.Message);
+      DisconnectContext(AContext);
+    end;
+  end;
+end;
+
+// this runs when a client disconnects
+// it removes the player info and updates the lobby for the other clients
+procedure TSimpleGameServer.ServerDisconnect(AContext: TIdContext);
+begin
+  try
+    d_lock.Enter;
+    try
+      if Assigned(AContext.Data) then
+        TObject(AContext.Data).Free;
+
+      AContext.Data := nil;
+    finally
+      d_lock.Leave;
+    end;
+
+    EnsureHost;
+    BroadcastLobby;
+    BroadcastSessions;
+    BroadcastHost;
+  except
+    on E: Exception do
+      TErrorHandler.ReportError('Client verbreken fout: ' + E.Message);
+  end;
+end;
+
+// this runs when a client sends a line of text to the server
+// commands are simple text messages like find, start and getsessions
+procedure TSimpleGameServer.ServerExecute(AContext: TIdContext);
+var
+  Msg: string;
+  Parts: TArray<string>;
+  Info: TClientInfo;
+  List: TList;
+  I: Integer;
+  Context: TIdContext;
+begin
+  try
+    // read one full line sent by the client
+    Msg := AContext.Connection.IOHandler.ReadLn;
+
+    if Length(Msg) > TGameConfig.MAX_MESSAGE_LENGTH then
+    begin
+      SendLine(AContext, 'error|message_too_long');
+      DisconnectContext(AContext);
+      Exit;
+    end;
+
+    // split the message by |
+    // example find|player1
+    Parts := Msg.Split(['|']);
+
+    if Length(Parts) = 0 then
+      Exit;
+
+    // get the stored player info for this client
+    Info := TClientInfo(AContext.Data);
+
+    if not Assigned(Info) then
+      Exit;
+
+    if Parts[0] = 'find' then
+    begin
+      if CountLobbyPlayers >= TGameConfig.MAX_PLAYERS then
+      begin
+        SendLine(AContext, 'error|lobby_full');
+        Exit;
+      end;
+
+      // find means this player wants to join matchmaking
+      if Length(Parts) > 1 then
+        Info.PlayerName := CleanPlayerName(Parts[1])
+      else
+        Info.PlayerName := 'Player';
+
+      // mark this player as inside the lobby
+      Info.IsInLobby := True;
+
+      EnsureHost;
+      BroadcastHost;
+
+      // send the new lobby player list to every client
+      BroadcastLobby;
+
+      // send the open session list to every client
+      BroadcastSessions;
+    end
+    else if Parts[0] = 'start' then
+    begin
+      if not Info.IsInLobby then
+      begin
+        SendLine(AContext, 'error|not_in_lobby');
+        Exit;
+      end;
+
+      // start means a player in the lobby pressed start game
+      // the server then tells every lobby player to start the game
+      d_lock.Enter;
+      List := d_tcpServer.Contexts.LockList;
+      try
+        for I := 0 to List.Count - 1 do
+        begin
+          Context := TIdContext(List[I]);
+
+          if Assigned(Context.Data) and TClientInfo(Context.Data).IsInLobby then
+            SendLine(Context, 'startgame');
+        end;
+      finally
+        d_tcpServer.Contexts.UnlockList;
+        d_lock.Leave;
+      end;
+    end
+    else if Parts[0] = 'leave' then
+    begin
+     Info.IsInLobby := False;
+     Info.IsGameHost := False;
+
+     EnsureHost;
+     BroadcastLobby;
+     BroadcastSessions;
+     BroadcastHost;
+    end
+    else if Parts[0] = 'getsessions' then
+    begin
+      // this is used when a client opens
+      // the client asks the server which sessions already exist
+      SendLine(AContext, 'sessions|' + GetSessionText);
+    end
+    else if Parts[0] = 'state' then
+    begin
+      if not Info.IsInLobby then
+      begin
+        SendLine(AContext, 'error|not_in_lobby');
+        Exit;
+      end;
+
+      d_lock.Enter;
+      List := d_tcpServer.Contexts.LockList;
+      try
+        for I := 0 to List.Count - 1 do
+        begin
+          Context := TIdContext(List[I]);
+
+          // send this player state to every other client
+          if Context <> AContext then
+            SendLine(Context, Msg);
+        end;
+      finally
+        d_tcpServer.Contexts.UnlockList;
+        d_lock.Leave;
+      end;
+    end
+    else if Parts[0] = 'obstacles' then
+    begin
+      if not Info.InLobby then
+      begin
+        SendLine(AContext, 'error|not_in_lobby');
+        Exit;
+      end;
+
+      d_lock.Enter;
+      List := d_tcpServer.Contexts.LockList;
+      try
+        for I := 0 to List.Count - 1 do
+        begin
+          Context := TIdContext(List[I]);
+
+          if Context <> AContext then
+            SendLine(Context, Msg);
+        end;
+      finally
+        d_tcpServer.Contexts.UnlockList;
+        d_lock.Leave;
+      end;
+    end
+    else
+      SendLine(AContext, 'error|unknown_command');
+  except
+    on E: Exception do
+    begin
+      TErrorHandler.ReportError('Server bericht fout: ' + E.Message);
+      DisconnectContext(AContext);
+    end;
+  end;
+end;
+
+// this sends one text line to one client
+procedure TSimpleGameServer.SendLine(AContext: TIdContext; const AText: string);
+begin
+  try
+    if Assigned(AContext) and Assigned(AContext.Connection) and AContext.Connection.Connected then
+      AContext.Connection.IOHandler.WriteLn(AText);
+  except
+    on E: Exception do
+      TErrorHandler.ReportError('Server verzenden fout: ' + E.Message);
+  end;
+end;
+
+// this makes one text line with all lobby player names
+// names are split with commas because the form uses CommaText to read them
+function TSimpleGameServer.GetLobbyPlayersText: string;
+var
+  List: TList;
+  I: Integer;
+  Context: TIdContext;
+  Info: TClientInfo;
+  First: Boolean;
+begin
+  Result := '';
+  First := True;
+
+  try
+    // lock the client list while reading it
+    List := d_tcpServer.Contexts.LockList;
+    try
+      for I := 0 to List.Count - 1 do
+      begin
+        Context := TIdContext(List[I]);
+
+        if Assigned(Context.Data) then
+        begin
+          Info := TClientInfo(Context.Data);
+
+          if Info.InLobby then
+          begin
+            if not First then
+              Result := Result + ',';
+
+            Result := Result + Info.PlayerName;
+            First := False;
+          end;
+        end;
+      end;
+    finally
+      d_tcpServer.Contexts.UnlockList;
+    end;
+  except
+    on E: Exception do
+    begin
+      TErrorHandler.ReportError('Lobby lijst fout: ' + E.Message);
+      Result := '';
+    end;
+  end;
+end;
+
+// this sends the current lobby player names to every connected client
+procedure TSimpleGameServer.BroadcastLobby;
+var
+  LobbyText: string;
+  List: TList;
+  I: Integer;
+  Context: TIdContext;
+begin
+  try
+    d_lock.Enter;
+    try
+      LobbyText := GetLobbyPlayersText;
+
+      List := d_tcpServer.Contexts.LockList;
+      try
+        for I := 0 to List.Count - 1 do
+        begin
+          Context := TIdContext(List[I]);
+
+          // example message: lobby|player1,player2
+          SendLine(Context, 'lobby|' + LobbyText);
+        end;
+      finally
+        d_tcpServer.Contexts.UnlockList;
+      end;
+    finally
+      d_lock.Leave;
+    end;
+  except
+    on E: Exception do
+      TErrorHandler.ReportError('Lobby verzenden fout: ' + E.Message);
+  end;
+end;
+
+// this creates the client object
+// every game window has one client
+constructor TSimpleGameClient.Create;
+begin
+  inherited;
+
+  FTcpClient := TIdTCPClient.Create(nil);
+
+  // this prevents the client from waiting forever when there is no message yet
+  FTcpClient.ReadTimeout := 1000;
+end;
+
+// this frees the client and stops the reader thread
+destructor TSimpleGameClient.Destroy;
+begin
+  Disconnect;
+  FreeAndNil(FTcpClient);
+
+  inherited;
+end;
+
+procedure TSimpleGameClient.ReportError(const AError: string);
+begin
+  try
+    TThread.Queue(nil,
+      procedure
+      begin
+        if Assigned(FOnError) then
+          FOnError(AError);
+      end
+    );
+  except
+  end;
+end;
+
+// this connects the client to the server
+// host is 127.0.0.1 for testing on the same pc
+function TSimpleGameClient.Connect(const AHost: string; const APort: Integer): Boolean;
+begin
+  Result := False;
+
+  try
+    if FTcpClient.Connected then
+      FTcpClient.Disconnect;
+
+    FTcpClient.Host := AHost;
+    FTcpClient.Port := APort;
+
+    // this makes the connection fail faster if no server is found
+    FTcpClient.ConnectTimeout := 1500;
+
+    FTcpClient.Connect;
+
+    FRunning := True;
+
+    // this thread keeps listening for messages from the server
+    FReaderThread := TThread.CreateAnonymousThread(
+      procedure
+      begin
+        ReaderLoop;
+      end
+    );
+
+    FReaderThread.FreeOnTerminate := False;
+    FReaderThread.Start;
+
+    Result := True;
+  except
+    on E: Exception do
+    begin
+      FRunning := False;
+      ReportError('Client verbinden fout: ' + E.Message);
+      Result := False;
+    end;
+  end;
+end;
+
+// this disconnects the client from the server
+procedure TSimpleGameClient.Disconnect;
+begin
+  FRunning := False;
+
+  try
+    if Assigned(FTcpClient) and FTcpClient.Connected then
+      FTcpClient.Disconnect;
+  except
+    on E: Exception do
+      ReportError('Client verbreken fout: ' + E.Message);
+  end;
+
+  // wait until the reader thread has stopped before freeing it
+  if Assigned(FReaderThread) then
+  begin
+    try
+      FReaderThread.WaitFor;
+    except
+      on E: Exception do
+        ReportError('Client thread stoppen fout: ' + E.Message);
+    end;
+
+    FreeAndNil(FReaderThread);
+  end;
+end;
+
+// this runs in a background thread
+// it keeps reading messages from the server
+procedure TSimpleGameClient.ReaderLoop;
+var
+  Msg: string;
+begin
+  while FRunning do
+  begin
+    try
+      if FTcpClient.Connected then
+      begin
+        // read one line from the server
+        Msg := FTcpClient.IOHandler.ReadLn;
+
+        if Msg <> '' then
+        begin
+          // move the message back to the main thread
+          QueueMessage(Msg);
+        end;
+      end
+      else
+        FRunning := False;
+    except
+      on E: Exception do
+      begin
+        // timeout or disconnect can happen here
+        // the loop keeps running while FRunning is true
+        if not FTcpClient.Connected then
+        begin
+          FRunning := False;
+          ReportError('Verbinding met server kwijt: ' + E.Message);
+        end;
+      end;
+    end;
+  end;
+end;
+
+// this moves a server message to the main ui thread
+// this is needed because ui code should not run inside the reader thread
+procedure TSimpleGameClient.QueueMessage(const AMessage: string);
+begin
+  try
+    TThread.Queue(nil,
+      procedure
+      begin
+        try
+          if Assigned(FOnMessage) then
+            FOnMessage(AMessage);
+        except
+          on E: Exception do
+            ReportError('Bericht verwerken fout: ' + E.Message);
+        end;
+      end
+    );
+  except
+    on E: Exception do
+      ReportError('Bericht naar ui sturen fout: ' + E.Message);
+  end;
+end;
+
+// this sends one text line from the client to the server
+procedure TSimpleGameClient.SendLine(const AText: string);
+begin
+  try
+    if Length(AText) > TGameConfig.MAX_MESSAGE_LENGTH then
+    begin
+      ReportError('Bericht is te lang');
+      Exit;
+    end;
+
+    if Assigned(FTcpClient) and FTcpClient.Connected then
+      FTcpClient.IOHandler.WriteLn(AText)
+    else
+      ReportError('Client is niet verbonden');
+  except
+    on E: Exception do
+      ReportError('Client verzenden fout: ' + E.Message);
+  end;
+end;
+
+// this creates the text for the open game session list
+// for now there is only one session
+// the session exists when at least one player is in the lobby
+function TSimpleGameServer.GetSessionText: string;
+var
+  Count: Integer;
+begin
+  try
+    Count := CountLobbyPlayers;
+
+    if Count > 0 then
+      Result := Format('Avontuur sessie 1  spelers %d van %d', [Count, TGameConfig.MAX_PLAYERS])
+    else
+      Result := '';
+  except
+    on E: Exception do
+    begin
+      TErrorHandler.ReportError('Sessie tekst fout: ' + E.Message);
+      Result := '';
+    end;
+  end;
+end;
+
+// this sends the current session list to every connected client
+procedure TSimpleGameServer.BroadcastSessions;
+var
+  SessionText: string;
+  List: TList;
+  I: Integer;
+  Context: TIdContext;
+begin
+  try
+    d_lock.Enter;
+    try
+      SessionText := GetSessionText;
+
+      List := d_tcpServer.Contexts.LockList;
+      try
+        for I := 0 to List.Count - 1 do
+        begin
+          Context := TIdContext(List[I]);
+
+          // example message: sessions|Avontuur sessie 1 spelers 2 van 4
+          SendLine(Context, 'sessions|' + SessionText);
+        end;
+      finally
+        d_tcpServer.Contexts.UnlockList;
+      end;
+    finally
+      d_lock.Leave;
+    end;
+  except
+    on E: Exception do
+      TErrorHandler.ReportError('Sessies verzenden fout: ' + E.Message);
+  end;
+end;
+
+function TSimpleGameServer.GetCurrentHostName: string;
+var
+  List: TList;
+  I: Integer;
+  Context: TIdContext;
+  Info: TClientInfo;
+begin
+  Result := '';
+
+  List := d_tcpServer.Contexts.LockList;
+  try
+    for I := 0 to List.Count - 1 do
+    begin
+      Context := TIdContext(List[I]);
+
+      if Assigned(Context.Data) then
+      begin
+        Info := TClientInfo(Context.Data);
+
+        if Info.InLobby and Info.IsGameHost then
+          Exit(Info.PlayerName);
+      end;
+    end;
+  finally
+    d_tcpServer.Contexts.UnlockList;
+  end;
+end;
+
+procedure TSimpleGameServer.EnsureHost;
+var
+  List: TList;
+  I: Integer;
+  Context: TIdContext;
+  Info: TClientInfo;
+  HasHost: Boolean;
+begin
+  HasHost := False;
+
+  List := d_tcpServer.Contexts.LockList;
+  try
+    for I := 0 to List.Count - 1 do
+    begin
+      Context := TIdContext(List[I]);
+
+      if Assigned(Context.Data) then
+      begin
+        Info := TClientInfo(Context.Data);
+
+        if Info.InLobby and Info.IsGameHost then
+        begin
+          HasHost := True;
+          Break;
+        end;
+      end;
+    end;
+
+    if not HasHost then
+    begin
+      for I := 0 to List.Count - 1 do
+      begin
+        Context := TIdContext(List[I]);
+
+        if Assigned(Context.Data) then
+        begin
+          Info := TClientInfo(Context.Data);
+
+          if Info.InLobby then
+          begin
+            Info.IsGameHost := True;
+            Break;
+          end;
+        end;
+      end;
+    end;
+  finally
+    d_tcpServer.Contexts.UnlockList;
+  end;
+end;
+
+procedure TSimpleGameServer.BroadcastHost;
+var
+  HostName: string;
+  List: TList;
+  I: Integer;
+  Context: TIdContext;
+begin
+  EnsureHost;
+  HostName := GetCurrentHostName;
+
+  List := d_tcpServer.Contexts.LockList;
+  try
+    for I := 0 to List.Count - 1 do
+    begin
+      Context := TIdContext(List[I]);
+
+      if Assigned(Context.Data) and TClientInfo(Context.Data).InLobby then
+        SendLine(Context, 'host|' + HostName);
+    end;
+  finally
+    d_tcpServer.Contexts.UnlockList;
+  end;
+end;
+
+
+// flag methodes
+function TClientInfo.IsInLobby: Boolean;
+begin
+  Result := State in [nsInLobby, nsHost, nsClient, nsPlaying];
+end;
+
+function TClientInfo.IsHost: Boolean;
+begin
+  Result := State = nsHost;
+end;
+
+function TClientInfo.IsPlaying: Boolean;
+begin
+  Result := State = nsPlaying;
+end;
+
+end.

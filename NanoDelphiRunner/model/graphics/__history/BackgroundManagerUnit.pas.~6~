@@ -1,0 +1,144 @@
+unit BackgroundManagerUnit;
+
+interface
+
+uses
+  System.Classes, System.SysUtils, System.Generics.Collections,
+  FMX.Controls,
+  BackgroundLayerUnit, AssetManagerUnit, GameConfigUnit, ErrorHandlerUnit;
+
+type
+  TBackgroundManager = class
+  private
+    d_backgrounds: TObjectList<TBackgroundLayer>;
+    d_parent: TControl;
+    d_assets: TAssetManager;
+
+  public
+    constructor Create;
+    destructor Destroy; override;
+
+    procedure Initialize(const AParent: TControl; const AAssets: TAssetManager);
+    procedure Rebuild;
+    procedure Resize(const AWidth, AHeight: Single);
+    procedure Update(const ADeltaTime, AScrollVelocity: Single);
+    procedure ResetPosition;
+
+    function GetBackgrounds: TObjectList<TBackgroundLayer>;
+  end;
+
+implementation
+
+constructor TBackgroundManager.Create;
+begin
+  inherited;
+
+  d_parent := nil;
+  d_assets := nil;
+  d_backgrounds := TObjectList<TBackgroundLayer>.Create(True);
+end;
+
+destructor TBackgroundManager.Destroy;
+begin
+  FreeAndNil(d_backgrounds);
+  inherited;
+end;
+
+// this connects the background manager to the game screen and assets
+// the parent is the place where the background images will be drawn
+// the assets object gives the bitmaps for the far, middle and front layer
+procedure TBackgroundManager.Initialize(const AParent: TControl; const AAssets: TAssetManager);
+begin
+  try
+    d_parent := AParent;
+    d_assets := AAssets;
+
+    Rebuild;
+  except
+    on E: Exception do
+      TErrorHandler.ReportError('background manager initialize error: ' + E.Message);
+  end;
+end;
+
+// this removes old background layers and creates new ones
+// this is useful when the theme changes because the background bitmaps also change
+procedure TBackgroundManager.Rebuild;
+begin
+  try
+    if not Assigned(d_parent) then
+      Exit;
+
+    if not Assigned(d_assets) then
+      Exit;
+
+    d_backgrounds.Clear;
+
+    if d_assets.d_theme = gtFakeMoonlanding then
+    begin
+      d_backgrounds.Add(TBackgroundLayer.Create(d_parent, d_assets.BgFarestBitmap, TGameConfig.BACKGROUND_FAREST_SPEED));
+      d_backgrounds.Add(TBackgroundLayer.Create(d_parent, d_assets.BgTreeMid, TGameConfig.BACKGROUND_MID_SPEED));
+    end;
+
+    d_backgrounds.Add(TBackgroundLayer.Create(d_parent, d_assets.BgFarBitmap, TGameConfig.BACKGROUND_FAR_SPEED));
+
+    d_backgrounds.Add(TBackgroundLayer.Create(d_parent, d_assets.BgMidBitmap, TGameConfig.BACKGROUND_MID_SPEED));
+
+    d_backgrounds.Add(TBackgroundLayer.Create(d_parent, d_assets.BgFrontBitmap, TGameConfig.BACKGROUND_FRONT_SPEED));
+  except
+    on E: Exception do
+      TErrorHandler.ReportError('background rebuild error: ' + E.Message);
+  end;
+end;
+
+// this updates the size of every background layer when the game screen size changes
+procedure TBackgroundManager.Resize(const AWidth, AHeight: Single);
+var
+  Bg: TBackgroundLayer;
+begin
+  try
+    for Bg in d_backgrounds do
+      Bg.Resize(AWidth, AHeight);
+  except
+    on E: Exception do
+      TErrorHandler.ReportError('background resize error: ' + E.Message);
+  end;
+end;
+
+// this moves the backgrounds with parallax
+// scroll velocity is the camera movement speed
+procedure TBackgroundManager.Update(const ADeltaTime, AScrollVelocity: Single);
+var
+  Bg: TBackgroundLayer;
+begin
+  try
+    for Bg in d_backgrounds do
+      Bg.Update(ADeltaTime, AScrollVelocity);
+  except
+    on E: Exception do
+      TErrorHandler.ReportError('background update error: ' + E.Message);
+  end;
+end;
+
+// this puts every background layer back at the start position
+// use this when a new game starts
+procedure TBackgroundManager.ResetPosition;
+var
+  Bg: TBackgroundLayer;
+begin
+  try
+    for Bg in d_backgrounds do
+      Bg.ResetPosition;
+  except
+    on E: Exception do
+      TErrorHandler.ReportError('background reset position error: ' + E.Message);
+  end;
+end;
+
+// this gives the renderer access to the layer list
+// the renderer needs this to put the layers in the correct visual order
+function TBackgroundManager.GetBackgrounds: TObjectList<TBackgroundLayer>;
+begin
+  Result := d_backgrounds;
+end;
+
+end.

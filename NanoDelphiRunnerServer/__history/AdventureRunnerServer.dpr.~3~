@@ -1,0 +1,39 @@
+program AdventureRunnerServer;
+
+{$APPTYPE CONSOLE}
+
+uses
+  System.SysUtils,
+  GameServerUnit,
+  GameConfigUnit;
+
+var
+  Server: TSimpleGameServer;
+  Command: string;
+
+begin
+  Server := TSimpleGameServer.Create;
+
+  try
+    Writeln('starting adventure runner server...');
+
+    if Server.Start(TGameConfig.SERVER_PORT) then
+    begin
+      Writeln('server is running on port ' + TGameConfig.SERVER_PORT.ToString);
+      Writeln('type stop and press enter to close the server');
+
+      repeat
+        Readln(Command);
+      until SameText(Command, 'stop');
+    end
+    else
+    begin
+      Writeln('server could not start');
+      Writeln('maybe the port is already used');
+      Readln;
+    end;
+
+  finally
+    Server.Free;
+  end;
+end.

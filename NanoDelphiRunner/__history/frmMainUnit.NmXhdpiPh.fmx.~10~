@@ -1,0 +1,29 @@
+inherited frmMain_NmXhdpiPh: TfrmMain_NmXhdpiPh
+  ClientHeight = 615
+  ClientWidth = 400
+  DesignerMasterStyle = 0
+  inherited tcContent: TTabControl
+    Size.Width = 400.000000000000000000
+    Size.Height = 558.000000000000000000
+    Sizes = (
+      400s
+      543s
+      400s
+      543s)
+    inherited tabHome: TTabItem
+      Size.Width = 43.000000000000000000
+      Size.Height = 15.000000000000000000
+      ExplicitSize.cx = 53.000000000000000000
+      ExplicitSize.cy = 26.000000000000000000
+    end
+    inherited tabGame: TTabItem
+      Size.Width = 42.000000000000000000
+      Size.Height = 15.000000000000000000
+      ExplicitSize.cx = 51.000000000000000000
+      ExplicitSize.cy = 26.000000000000000000
+    end
+  end
+  inherited Panel1: TPanel
+    Size.Width = 400.000000000000000000
+  end
+end

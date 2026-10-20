@@ -1,0 +1,85 @@
+unit InputStateUnit;
+
+interface
+
+uses
+  System.Classes, System.UITypes;
+
+type
+  TInputState = class
+  private
+    FJumpPressed: Boolean;
+    FJumpQueued: Boolean;
+    FMoveLeft: Boolean;
+    FMoveRight: Boolean;
+  public
+    procedure Reset;
+    procedure KeyDown(const AKey: Word);
+    procedure KeyUp(const AKey: Word);
+    procedure MouseDown(const Button: TMouseButton);
+
+    function ConsumeJump: Boolean;
+    function IsMovingLeft: Boolean;
+    function IsMovingRight: Boolean;
+  end;
+
+implementation
+
+procedure TInputState.Reset;
+begin
+  FJumpPressed := False;
+  FJumpQueued := False;
+  FMoveLeft := False;
+  FMoveRight := False;
+end;
+
+procedure TInputState.KeyDown(const AKey: Word);
+begin
+  if AKey = vkSpace then
+    FJumpQueued := True;
+
+  if AKey = vkLeft then
+    FMoveLeft := True;
+
+  if AKey = vkRight then
+    FMoveRight := True;
+end;
+
+procedure TInputState.KeyUp(const AKey: Word);
+begin
+  if AKey = vkLeft then
+    FMoveLeft := False;
+
+  if AKey = vkRight then
+    FMoveRight := False;
+end;
+
+procedure TInputState.MouseDown(const Button: TMouseButton);
+begin
+  if Button = TMouseButton.mbLeft then
+    FJumpQueued := True;
+end;
+
+function TInputState.ConsumeJump: Boolean;
+begin
+  if FJumpQueued then
+  begin
+    FJumpPressed := True;
+    FJumpQueued := False;
+  end;
+
+  Result := FJumpPressed;
+  FJumpPressed := False;
+end;
+
+function TInputState.IsMovingLeft: Boolean;
+begin
+  Result := FMoveLeft;
+end;
+
+function TInputState.IsMovingRight: Boolean;
+begin
+  Result := FMoveRight;
+end;
+
+end.

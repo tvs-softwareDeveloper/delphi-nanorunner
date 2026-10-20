@@ -1,0 +1,67 @@
+﻿unit BackgroundLayerUnit;
+
+interface
+
+uses
+  System.Classes, System.SysUtils, System.Types,
+  FMX.Types, FMX.Controls, FMX.Objects, FMX.Graphics;
+
+type
+  TBackgroundLayer = class
+  private
+    d_images: array[0..1] of TImage;
+    d_speedFactor: Single;
+    d_width: Single;
+  public
+    constructor Create(AParent: TFmxObject; const ABitmap: TBitmap; ASpeed: Single);
+    procedure Update(const ADeltaTime: Single; PlayerVelocity: Single);
+  end;
+
+implementation
+
+constructor TBackgroundLayer.Create(AParent: TFmxObject; const ABitmap: TBitmap; ASpeed: Single);
+var
+  i: Integer;
+  ParentControl: TControl;
+begin
+  d_speedFactor := ASpeed;
+  ParentControl := AParent as TControl;
+
+  for i := 0 to 1 do
+  begin
+    d_images[i] := TImage.Create(AParent);
+    d_images[i].Parent := AParent;
+    d_images[i].Bitmap.Assign(ABitmap);
+    d_images[i].WrapMode := TImageWrapMode.Stretch;
+    d_images[i].HitTest := False;
+
+    d_images[i].Width := ParentControl.Width;
+    d_images[i].Height := ParentControl.Height;
+    d_images[i].Position.X := i * d_images[i].Width;
+    d_images[i].Position.Y := 0;
+
+    d_images[i].SendToBack;
+  end;
+
+  d_width := d_images[0].Width;
+end;
+
+procedure TBackgroundLayer.Update(const ADeltaTime: Single; PlayerVelocity: Single);
+var
+  i: Integer;
+  move: Single;
+begin
+  move := PlayerVelocity * d_speedFactor * ADeltaTime;
+
+  for i := 0 to 1 do
+  begin
+    d_images[i].Position.X := d_images[i].Position.X - move;
+
+    if d_images[i].Position.X <= -d_width then
+      d_images[i].Position.X := d_images[i].Position.X + d_width * 2
+    else if d_images[i].Position.X >= d_width then
+      d_images[i].Position.X := d_images[i].Position.X - d_width * 2;
+  end;
+end;
+
+end.

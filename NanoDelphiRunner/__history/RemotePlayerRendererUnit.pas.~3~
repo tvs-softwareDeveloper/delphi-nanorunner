@@ -1,0 +1,403 @@
+unit RemotePlayerRendererUnit;
+
+interface
+
+uses
+  System.Classes, System.SysUtils, System.Types, System.Generics.Collections, System.UITypes,
+  FMX.Types, FMX.Forms, FMX.Controls, FMX.Objects, FMX.Graphics, FMX.StdCtrls,
+  PlayerUnit, ObstacleManagerUnit, ObstacleUnit, System.Math, FMX.Utils,
+  BackgroundLayerUnit, ErrorHandlerUnit, GameConfigUnit, AssetManagerUnit;
+
+type
+  TRemotePlayerRenderState = class
+  public
+    LastFrame: Integer;
+    LastState: TPlayerState;
+
+    constructor Create;
+  end;
+
+  TRemotePlayerRenderer = class
+  private
+    d_form: TForm;
+    d_parent: TControl;
+    d_localPlayerImage: TImage;
+    d_assets: TAssetManager;
+
+    d_remotePlayerImages: TObjectDictionary<string, TImage>;
+    d_remotePlayerNameLabels: TObjectDictionary<string, TLabel>;
+    d_remotePlayerRenderStates: TObjectDictionary<string, TRemotePlayerRenderState>;
+    d_remotePlayerWorldX: TObjectDictionary<string, Single>;
+
+    d_playerNormalW: Single;
+    d_playerNormalH: Single;
+    d_playerJetpackW: Single;
+    d_playerJetpackH: Single;
+
+    procedure SetImageBitmapIfChanged(AImage: TImage; ABitmap: TBitmap; var ALastFrame: Integer; ANewFrame: Integer);
+
+  public
+    constructor Create;
+    destructor Destroy; override;
+
+    procedure Initialize(const AForm: TForm; const AParent: TControl; const ALocalPlayerImage: TImage; const AAssets: TAssetManager);
+    procedure UpdateRemotePlayer(const AName: string; const AX, AY: Single; const AState, AFrame: Integer; const AFacingRight: Boolean; const AAirTime: Single; const ACameraX: Single);
+    procedure BringToFront;
+
+    function GetLastPlayerWorldX(const ALocalWorldX: Single): Single;
+    function GetFrontPlayerWorldX(const ALocalWorldX: Single): Single;
+    function HasRemotePlayers: Boolean;
+  end;
+
+implementation
+
+constructor TRemotePlayerRenderState.Create;
+begin
+  inherited;
+  LastFrame := -1;
+  LastState := psIdle;
+end;
+
+constructor TRemotePlayerRenderer.Create;
+begin
+  inherited;
+
+  d_remotePlayerImages := TObjectDictionary<string, TImage>.Create([doOwnsValues]);
+  d_remotePlayerNameLabels := TObjectDictionary<string, TLabel>.Create([doOwnsValues]);
+  d_remotePlayerRenderStates := TObjectDictionary<string, TRemotePlayerRenderState>.Create([doOwnsValues]);
+  d_remotePlayerWorldX := TObjectDictionary<string, Single>.Create;
+
+  d_playerNormalW := TGameConfig.PLAYER_NORMAL_WIDTH;
+  d_playerNormalH := TGameConfig.PLAYER_NORMAL_HEIGHT;
+  d_playerJetpackW := TGameConfig.PLAYER_JETPACK_WIDTH;
+  d_playerJetpackH := TGameConfig.PLAYER_JETPACK_HEIGHT;
+end;
+
+destructor TRemotePlayerRenderer.Destroy;
+begin
+  FreeAndNil(d_remotePlayerImages);
+  FreeAndNil(d_remotePlayerNameLabels);
+  FreeAndNil(d_remotePlayerRenderStates);
+  FreeAndNil(d_remotePlayerWorldX);
+
+  inherited;
+end;
+
+procedure TRemotePlayerRenderer.Initialize(const AForm: TForm; const AParent: TControl; const ALocalPlayerImage: TImage; const AAssets: TAssetManager);
+begin
+  d_form := AForm;
+  d_parent := AParent;
+  d_localPlayerImage := ALocalPlayerImage;
+  d_assets := AAssets;
+end;
+
+procedure TRemotePlayerRenderer.SetImageBitmapIfChanged(AImage: TImage; ABitmap: TBitmap; var ALastFrame: Integer; ANewFrame: Integer);
+begin
+  if not Assigned(AImage) or not Assigned(ABitmap) then
+    Exit;
+
+  if ALastFrame = ANewFrame then
+    Exit;
+
+  AImage.Bitmap.Assign(ABitmap);
+  ALastFrame := ANewFrame;
+end;
+
+// this updates or creates one remote player image
+// remote means another player that is connected through the server
+// the server sends the world position, animation state, frame number and look direction
+// this method changes that network data into a visible image on this screen
+// ax and ay are world positions, not screen positions
+// screenx is made by subtracting the camera x position from ax
+// this is needed because the map can move while the player image stays on the screen
+procedure TRemotePlayerRenderer.UpdateRemotePlayer(const AName: string; const AX, AY: Single; const AState, AFrame: Integer; const AFacingRight: Boolean; const AAirTime: Single; const ACameraX: Single);
+var
+  RemoteImg: TImage;
+  State: TPlayerState;
+  FrameIndex: Integer;
+  ScreenX: Single;
+  ScreenW: Single;
+  Angle: Single;
+  RenderState: TRemotePlayerRenderState;
+  NameLabel: TLabel;
+begin
+  RemoteImg := nil;
+  NameLabel := nil;
+  RenderState := nil;
+
+  try
+    // stop when the player name is empty
+    // the name is used as the key in all remote player lists
+    if Trim(AName) = '' then
+      Exit;
+
+    // stop when the renderer is not ready yet
+    // without these objects we cannot draw the remote player
+    if not Assigned(d_form) then
+    begin
+      TErrorHandler.ReportError('remote player renderer form is not assigned');
+      Exit;
+    end;
+
+    if not Assigned(d_parent) then
+    begin
+      TErrorHandler.ReportError('remote player renderer parent is not assigned');
+      Exit;
+    end;
+
+    if not Assigned(d_assets) then
+    begin
+      TErrorHandler.ReportError('remote player renderer assets are not assigned');
+      Exit;
+    end;
+
+    // the network sends the player state as a number
+    // this check makes sure the number fits inside the player state list
+    if (AState < Ord(Low(TPlayerState))) or (AState > Ord(High(TPlayerState))) then
+    begin
+      TErrorHandler.ReportError('remote player state is invalid: ' + AState.ToString);
+      Exit;
+    end;
+
+    State := TPlayerState(AState);
+
+    // ax is the real position in the world
+    // camera x is how far the local camera has moved
+    // subtracting camera x gives the position on this screen
+    ScreenX := AX - ACameraX;
+
+    // save the remote player world position
+    // this is later used to know who is the front player and who is the last player
+    d_remotePlayerWorldX.AddOrSetValue(AName, AX);
+
+    ScreenW := d_parent.Width;
+
+    // get the image for this remote player
+    // if it does not exist yet, make it one time and reuse it later
+    if not d_remotePlayerImages.TryGetValue(AName, RemoteImg) then
+    begin
+      RemoteImg := TImage.Create(d_form);
+      RemoteImg.Parent := d_parent;
+      RemoteImg.Width := d_playerNormalW;
+      RemoteImg.Height := d_playerNormalH;
+      RemoteImg.WrapMode := TImageWrapMode.Fit;
+      RemoteImg.HitTest := False;
+      RemoteImg.Stored := False;
+      RemoteImg.Opacity := TGameConfig.REMOTE_PLAYER_OPACITY;
+
+      d_remotePlayerImages.Add(AName, RemoteImg);
+    end;
+
+    if not Assigned(RemoteImg) then
+    begin
+      TErrorHandler.ReportError('remote player image could not be created');
+      Exit;
+    end;
+
+    // get the label for this remote player
+    // the label shows the player name above the sprite
+    if not d_remotePlayerNameLabels.TryGetValue(AName, NameLabel) then
+    begin
+      NameLabel := TLabel.Create(d_form);
+      NameLabel.Parent := d_parent;
+      NameLabel.Text := AName;
+      NameLabel.Width := 140;
+      NameLabel.Height := 24;
+      NameLabel.HitTest := False;
+      NameLabel.Stored := False;
+      NameLabel.TextSettings.HorzAlign := TTextAlign.Center;
+      NameLabel.TextSettings.Font.Size := 14;
+      NameLabel.TextSettings.Font.Style := [TFontStyle.fsBold];
+      NameLabel.StyledSettings := [];
+
+      d_remotePlayerNameLabels.Add(AName, NameLabel);
+    end;
+
+    if not Assigned(NameLabel) then
+    begin
+      TErrorHandler.ReportError('remote player name label could not be created');
+      Exit;
+    end;
+
+    // get the render state for this remote player
+    // this stores the last used animation frame
+    // this prevents assigning the same bitmap every frame
+    if not d_remotePlayerRenderStates.TryGetValue(AName, RenderState) then
+    begin
+      RenderState := TRemotePlayerRenderState.Create;
+      d_remotePlayerRenderStates.Add(AName, RenderState);
+    end;
+
+    if not Assigned(RenderState) then
+    begin
+      TErrorHandler.ReportError('remote player render state could not be created');
+      Exit;
+    end;
+
+    // when the player state changes, the animation should start fresh
+    // example: running changes to jumping
+    if RenderState.LastState <> State then
+    begin
+      RenderState.LastState := State;
+      RenderState.LastFrame := -1;
+    end;
+
+    // hide the remote player when it is far outside the screen
+    // this saves drawing work and prevents far away players from showing
+    if (ScreenX < -TGameConfig.REMOTE_PLAYER_HIDE_MARGIN) or
+       (ScreenX > ScreenW + TGameConfig.REMOTE_PLAYER_HIDE_MARGIN) then
+    begin
+      RemoteImg.Visible := False;
+      NameLabel.Visible := False;
+      Exit;
+    end;
+
+    // jetpack sprites are bigger than normal sprites
+    // so the image size must change before we set the position
+    if State in [psJetpackUp, psJetpackFlying] then
+    begin
+      RemoteImg.Width := d_playerJetpackW;
+      RemoteImg.Height := d_playerJetpackH;
+    end
+    else
+    begin
+      RemoteImg.Width := d_playerNormalW;
+      RemoteImg.Height := d_playerNormalH;
+    end;
+
+    // keep the sprite centered around the normal player body
+    // when the sprite is bigger, half of the extra width moves to the left
+    // when the player faces left, the image is flipped, so the x position needs another correction
+    if State in [psJetpackUp, psJetpackFlying] then
+      RemoteImg.Position.X := ScreenX - ((RemoteImg.Width - d_playerNormalW) / 2)
+    else if AFacingRight then
+      RemoteImg.Position.X := ScreenX - ((RemoteImg.Width - d_playerNormalW) / 2)
+    else
+      RemoteImg.Position.X := ScreenX + d_playerNormalW + ((RemoteImg.Width - d_playerNormalW) / 2);
+
+    // keep the feet close to the same ground line
+    // bigger sprites are moved upward by their extra height
+    RemoteImg.Position.Y := AY - (RemoteImg.Height - d_playerNormalH);
+
+    // place the name label above the player
+    NameLabel.Position.X := RemoteImg.Position.X + (RemoteImg.Width / 2) - (NameLabel.Width / 2);
+    NameLabel.Position.Y := RemoteImg.Position.Y - NameLabel.Height - 4;
+    NameLabel.Visible := True;
+
+    // flip the sprite when the player looks left
+    // jetpack sprites stay normal because they are drawn for one direction
+    if AFacingRight or (State in [psJetpackUp, psJetpackFlying]) then
+      RemoteImg.Scale.X := 1
+    else
+      RemoteImg.Scale.X := -1;
+
+    // reset rotation before choosing the sprite
+    // jump state can change this value again below
+    RemoteImg.RotationAngle := 0;
+
+    // choose the correct animation image for the current player state
+    // ensure range keeps bad network frame numbers inside the allowed range
+    if State = psJetpackUp then
+    begin
+      if d_assets.d_jetpackUpFrames.Count > 0 then
+      begin
+        FrameIndex := EnsureRange(AFrame, 0, d_assets.d_jetpackUpFrames.Count - 1);
+        SetImageBitmapIfChanged(RemoteImg, d_assets.d_jetpackUpFrames[FrameIndex], RenderState.LastFrame, FrameIndex);
+      end
+      else
+        TErrorHandler.ReportError('jetpack up frames are missing');
+    end
+    else if State = psJetpackFlying then
+    begin
+      if d_assets.d_jetpackFlyFrames.Count > 0 then
+      begin
+        FrameIndex := EnsureRange(AFrame, 0, d_assets.d_jetpackFlyFrames.Count - 1);
+        SetImageBitmapIfChanged(RemoteImg, d_assets.d_jetpackFlyFrames[FrameIndex], RenderState.LastFrame, FrameIndex);
+      end
+      else
+        TErrorHandler.ReportError('jetpack fly frames are missing');
+    end
+    else if State in [psJumpStart, psJumping, psFalling] then
+    begin
+      if not d_assets.d_jumpSprite.IsEmpty then
+      begin
+        RemoteImg.Bitmap.Assign(d_assets.d_jumpSprite);
+
+        // rotate the player while jumping
+        // air time tells how long the player has been in the air
+        Angle := 360 * (AAirTime / TGameConfig.PLAYER_JUMP_ROTATION_TIME);
+        RemoteImg.RotationAngle := Angle;
+      end
+      else
+        TErrorHandler.ReportError('jump sprite is missing');
+    end
+    else
+    begin
+      if d_assets.d_playerFrames.Count > 0 then
+      begin
+        FrameIndex := EnsureRange(AFrame, 0, d_assets.d_playerFrames.Count - 1);
+        SetImageBitmapIfChanged(RemoteImg, d_assets.d_playerFrames[FrameIndex], RenderState.LastFrame, FrameIndex);
+      end
+      else
+        TErrorHandler.ReportError('player frames are missing');
+    end;
+
+    // show the remote player after all values are ready
+    RemoteImg.Visible := True;
+    RemoteImg.BringToFront;
+    NameLabel.BringToFront;
+
+    // keep the local player above remote players
+    if Assigned(d_localPlayerImage) then
+      d_localPlayerImage.BringToFront;
+  except
+    on E: Exception do
+      TErrorHandler.ReportError('remote player update error: ' + E.Message);
+  end;
+end;
+
+procedure TRemotePlayerRenderer.BringToFront;
+var
+  PairImg: TPair<string, TImage>;
+  PairLabel: TPair<string, TLabel>;
+begin
+  for PairImg in d_remotePlayerImages do
+    if Assigned(PairImg.Value) then
+      PairImg.Value.BringToFront;
+
+  for PairLabel in d_remotePlayerNameLabels do
+    if Assigned(PairLabel.Value) then
+      PairLabel.Value.BringToFront;
+
+  if Assigned(d_localPlayerImage) then
+    d_localPlayerImage.BringToFront;
+end;
+
+function TRemotePlayerRenderer.GetLastPlayerWorldX(const ALocalWorldX: Single): Single;
+var
+  Pair: TPair<string, Single>;
+begin
+  Result := ALocalWorldX;
+
+  for Pair in d_remotePlayerWorldX do
+    if Pair.Value < Result then
+      Result := Pair.Value;
+end;
+
+function TRemotePlayerRenderer.GetFrontPlayerWorldX(const ALocalWorldX: Single): Single;
+var
+  Pair: TPair<string, Single>;
+begin
+  Result := ALocalWorldX;
+
+  for Pair in d_remotePlayerWorldX do
+    if Pair.Value > Result then
+      Result := Pair.Value;
+end;
+
+function TRemotePlayerRenderer.HasRemotePlayers: Boolean;
+begin
+  Result := d_remotePlayerWorldX.Count > 0;
+end;
+
+end.

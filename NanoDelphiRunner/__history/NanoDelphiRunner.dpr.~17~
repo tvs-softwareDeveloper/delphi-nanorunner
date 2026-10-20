@@ -1,0 +1,32 @@
+program NanoDelphiRunner;
+
+uses
+  System.StartUpCopy,
+  FMX.Forms,
+  frmMainUnit in 'frmMainUnit.pas' {frmMain},
+  GameEngine in 'GameEngine.pas',
+  PlayerUnit in 'PlayerUnit.pas',
+  BackgroundLayerUnit in 'BackgroundLayerUnit.pas',
+  ObstacleManagerUnit in 'ObstacleManagerUnit.pas',
+  InputStateUnit in 'InputStateUnit.pas',
+  ObstacleUnit in 'ObstacleUnit.pas',
+  frameGame in 'frameGame.pas' {Frame1: TFrame},
+  frameLobby in 'frameLobby.pas' {Frame2: TFrame},
+  GameServerUnit in 'GameServerUnit.pas',
+  ErrorHandlerUnit in 'ErrorHandlerUnit.pas',
+  UIScreenUnit in 'UIScreenUnit.pas',
+  GameConfigUnit in 'GameConfigUnit.pas',
+  AssetManagerUnit in 'AssetManagerUnit.pas',
+  GameStateUnit in 'GameStateUnit.pas',
+  GameNetworkSyncUnit in 'GameNetworkSyncUnit.pas',
+  BackgroundManagerUnit in 'BackgroundManagerUnit.pas',
+  RemotePlayerRendererUnit in 'RemotePlayerRendererUnit.pas',
+  GameRendererUnit in 'GameRendererUnit.pas';
+
+{$R *.res}
+
+begin
+  Application.Initialize;
+  Application.CreateForm(TfrmMain, frmMain);
+  Application.Run;
+end.

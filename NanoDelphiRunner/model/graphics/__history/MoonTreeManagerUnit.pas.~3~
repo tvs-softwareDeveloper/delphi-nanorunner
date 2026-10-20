@@ -1,0 +1,131 @@
+unit MoonTreeManagerUnit;
+
+interface
+
+uses
+  System.Classes, System.SysUtils, System.Types, System.Generics.Collections, FMX.Objects, FMX.Types, FMX.Graphics, FMX.Controls,
+  AssetManagerUnit, GameConfigUnit;
+
+type
+  TMoonTree = class
+  public
+    WorldX: Single;
+    Y: Single;
+    BitmapIndex: Integer;
+    Img: TImage;
+    destructor Destroy; override;
+  end;
+
+  TMoonTreeManager = class
+  private
+    d_parent: TControl;
+    d_assets: TAssetManager;
+    d_trees: TObjectList<TMoonTree>;
+    d_nextSpawnX: Single;
+    procedure BringToFront;
+    procedure SpawnTree(const AWorldX: Single);
+
+  public
+    constructor Create;
+    destructor Destroy; override;
+    procedure Initialize(const AParent: TControl; const AAssets: TAssetManager);
+    procedure Reset;
+    procedure Update(const ACameraX: Single; const AViewWidth: Single);
+  end;
+
+implementation
+
+procedure TMoonTreeManager.BringToFront;
+var
+  T: TMoonTree;
+begin
+  for T in d_trees do
+  begin
+    if Assigned(T.Img) then
+      T.Img.BringToFront;
+  end;
+end;
+
+destructor TMoonTree.Destroy;
+begin
+  FreeAndNil(Img);
+  inherited;
+end;
+
+constructor TMoonTreeManager.Create;
+begin
+  inherited;
+  d_trees := TObjectList<TMoonTree>.Create(True);
+end;
+
+destructor TMoonTreeManager.Destroy;
+begin
+  FreeAndNil(d_trees);
+  inherited;
+end;
+
+procedure TMoonTreeManager.Initialize(const AParent: TControl; const AAssets: TAssetManager);
+begin
+  d_parent := AParent;
+  d_assets := AAssets;
+  Reset;
+end;
+
+procedure TMoonTreeManager.Reset;
+begin
+  d_trees.Clear;
+  d_nextSpawnX := 400;
+end;
+
+procedure TMoonTreeManager.SpawnTree(const AWorldX: Single);
+var
+  T: TMoonTree;
+  Gap: Single;
+begin
+  if not Assigned(d_assets) then
+    Exit;
+
+  if d_assets.d_treeFrames.Count <= 0 then
+    Exit;
+
+  T := TMoonTree.Create;
+
+  T.WorldX := AWorldX;
+  T.Y := d_parent.Height - TGameConfig.MOON_TREE_HEIGHT + TGameConfig.MOON_TREE_Y_OFFSET;
+  T.BitmapIndex := Random(d_assets.d_treeFrames.Count);
+
+  T.Img := TImage.Create(d_parent);
+  T.Img.Parent := d_parent;
+  T.Img.Width := TGameConfig.MOON_TREE_WIDTH;
+  T.Img.Height := TGameConfig.MOON_TREE_HEIGHT;
+  T.Img.WrapMode := TImageWrapMode.Fit;
+  T.Img.HitTest := False;
+
+  T.Img.Bitmap.Assign(d_assets.d_treeFrames[T.BitmapIndex]);
+
+  d_trees.Add(T);
+
+  Gap := TGameConfig.MOON_TREE_MIN_X_GAP +
+    Random(Round(TGameConfig.MOON_TREE_MAX_X_GAP - TGameConfig.MOON_TREE_MIN_X_GAP));
+
+  d_nextSpawnX := AWorldX + Gap;
+end;
+
+procedure TMoonTreeManager.Update(const ACameraX: Single; const AViewWidth: Single);
+var
+  T: TMoonTree;
+  SpawnUntilX: Single;
+begin
+  SpawnUntilX := ACameraX + AViewWidth + 1200;
+
+  while d_nextSpawnX < SpawnUntilX do
+    SpawnTree(d_nextSpawnX);
+
+  for T in d_trees do
+  begin
+    T.Img.Position.X := T.WorldX - ACameraX;
+    T.Img.Position.Y := T.Y;
+  end;
+end;
+
+end.

@@ -1,0 +1,10 @@
+﻿[]
+Coordinates=198,10,111,58
+
+[imgPlayer]
+Coordinates=10,10,57,58
+Visible=True
+
+[imgObstacle1]
+Coordinates=10,78,57,58
+

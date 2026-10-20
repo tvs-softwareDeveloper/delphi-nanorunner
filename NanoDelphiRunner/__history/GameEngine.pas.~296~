@@ -1,0 +1,1400 @@
+﻿unit GameEngine;
+
+interface
+
+uses
+  System.Classes, System.SysUtils, System.Types, System.Generics.Collections, System.UITypes,
+  FMX.Types, FMX.Forms, FMX.Controls, FMX.Objects, FMX.Graphics, FMX.StdCtrls,
+  PlayerUnit, ObstacleManagerUnit, ObstacleUnit, System.Math, FMX.Utils,
+  BackgroundLayerUnit, ErrorHandlerUnit, GameConfigUnit, AssetManagerUnit, RemotePlayerRendererUnit, GameNetworkSyncUnit;
+
+type
+
+  TDemonState = (
+    dsHidden,
+    dsMovingUp,
+    dsShowing,
+    dsMovingDown
+  );
+
+  TGameEngine = class
+  private
+    d_form: TForm;
+    d_player: TPlayer;
+    d_obstacleManager: TObstacleManager;
+    d_isRunning: Boolean;
+    d_survivalTime: Single;
+    d_distanceMeters: Single;
+    d_pixelsPerMeter: Single;
+    d_gameOver: Boolean;
+
+    d_lastFrontPlayerWorldX: Single;
+    d_obstacleSpawnWorldX: Single;
+
+    d_scoreUpdateTimer: Single;
+
+    d_imgPlayer: TImage;
+    d_imgObstacleTemplate: TImage;
+
+    d_obstacleImages: TObjectList<TImage>;
+
+    d_backgrounds: TObjectList<TBackgroundLayer>;
+
+    d_player_x: Single;
+    d_player_y: Single;
+    d_obstacle_x: Single;
+    d_obstacle_y: Single;
+
+    d_onScoreUpdate: TProc<Single>;
+    d_onGameOver: TProc;
+    d_worldScrollX: Single;
+
+    d_playerNormalW: Single;
+    d_playerNormalH: Single;
+    d_playerJetpackW: Single;
+    d_playerJetpackH: Single;
+
+
+    d_restartProtectionTimer: Single;
+    d_demonState: TDemonState;
+    d_imgDemon: TImage;
+    d_demonFrameIndex: Integer;
+    d_demonAnimTimer: Single;
+    d_demonX: Single;
+    d_demonY: Single;
+    d_demonW: Single;
+    d_demonH: Single;
+    d_nextDemonMeter: Single;
+    d_remotePlayerRenderer: TRemotePlayerRenderer;
+
+    d_collisionEnabled: Boolean;
+    d_isHostMode: Boolean;
+
+    d_cameraX: Single;
+    d_worldPlayerX: Single;
+
+    // for reuse
+    d_lastPlayerFrame: Integer;
+    d_lastPlayerState: TPlayerState;
+    d_lastDemonFrame: Integer;
+    d_lastPatatoFrame: Integer;
+    d_lastJetpackUpFrame: Integer;
+    d_lastJetpackFlyFrame: Integer;
+    d_lastDragonFrame: Integer;
+    d_lastObstacleFrame: Integer;
+
+    d_speedBoostTimer: Single;
+    d_assets: TAssetManager;
+
+    procedure RebuildBackgrounds;
+    procedure ApplyLayerOrder;
+    procedure ChangeDemonState(const ANewState: TDemonState);
+    procedure StartDemonEvent(const AParent: TControl);
+    procedure UpdateDemon(const ADeltaTime: Single; const AParent: TControl);
+    function GetFrontPlayerSpeed(const ADeltaTime: Single): Single;
+    function GetSafeSpawnBaseX(const AParentWidth: Single): Single;
+
+  public
+    constructor Create;
+    destructor Destroy; override;
+    procedure Initialize(AForm: TForm);
+    procedure SetTheme(const ATheme: TGameTheme);
+    procedure Update(const ADeltaTime: Single; const MoveLeft, MoveRight, MoveUp, MoveDown: Boolean);
+    procedure Render;
+    procedure StartGame;
+    procedure StopGame;
+    procedure GameOver;
+    procedure RestartGame(const AResetObstacles: Boolean);
+    procedure HandleJump;
+    procedure SetCanvasSize(const aWidth, aHeight: Single);
+    procedure SetOnScoreUpdate(const ACallback: TProc<Single>);
+    procedure SetOnGameOver(const ACallback: TProc);
+    procedure UpdateRemotePlayer(const AName: string; const AX, AY: Single; const AState, AFrame: Integer; const AFacingRight: Boolean; const AAirTime: Single);
+    function GetPlayerSyncText(const APlayerName: string): string;
+    procedure SetCollisionEnabled(const AValue: Boolean);
+    procedure SetHostMode(const AValue: Boolean);
+    function GetObstacleSyncText: string;
+    function GetLastPlayerWorldX : Single;
+    function GetFrontPlayerWorldX: Single;
+    procedure ApplyObstacleSyncText(const AText: string);     procedure StartGameWithOptions(const AResetObstacles: Boolean);
+    procedure SetImageBitmapIfChanged(AImage: TImage; ABitmap: TBitmap; var ALastFrame: Integer; ANewFrame: Integer);
+  end;
+
+implementation
+
+procedure TGameEngine.SetTheme(const ATheme: TGameTheme);
+begin
+  if not Assigned(d_assets) then
+    Exit;
+
+  d_assets.SetTheme(ATheme);
+
+  if Assigned(d_form) then
+  begin
+    d_assets.LoadThemeAssets;
+
+    d_obstacleManager.SetPotatoTotalFrames(Max(1, d_assets.PotatoFrames.Count));
+    d_obstacleManager.SetDragonTotalFrames(Max(1, d_assets.DragonFrames.Count));
+    d_obstacleManager.SetTotalFrames(Max(1, d_assets.ObstacleFrames.Count));
+
+    RebuildBackgrounds;
+    ApplyLayerOrder;
+
+    if Assigned(d_imgPlayer) and Assigned(d_imgPlayer.Parent) then
+      SetCanvasSize((d_imgPlayer.Parent as TControl).Width, (d_imgPlayer.Parent as TControl).Height);
+  end;
+end;
+
+procedure TGameEngine.StartGameWithOptions(const AResetObstacles: Boolean);
+var
+  bg: TBackgroundLayer;
+begin
+  if not Assigned(d_player) or not Assigned(d_obstacleManager) then
+    Exit;
+
+  d_isRunning := True;
+  d_gameOver := False;
+  d_survivalTime := 0;
+  d_distanceMeters := 0;
+  d_worldScrollX := 0;
+
+  d_player.SetPosition(TPointF.Create(d_player_x, d_player_y));
+  d_player.SetGroundY(d_player_y);
+  d_player.ChangeState(psIdle);
+
+  ChangeDemonState(dsHidden);
+  d_demonFrameIndex := 0;
+  d_demonAnimTimer := 0;
+  d_nextDemonMeter := TGameConfig.DEMON_FIRST_METER;
+
+  d_cameraX := 0;
+  d_worldPlayerX := d_player_x;
+  d_lastFrontPlayerWorldX := d_worldPlayerX;
+
+  if AResetObstacles then
+    d_obstacleSpawnWorldX := d_worldPlayerX;
+
+  if Assigned(d_imgDemon) then
+    d_imgDemon.Visible := False;
+
+  for bg in d_backgrounds do
+    bg.ResetPosition;
+
+  if AResetObstacles then
+    d_obstacleManager.Reset;
+
+end;
+
+constructor TGameEngine.Create;
+begin
+  inherited;
+  // score and distance values
+  d_distanceMeters := 0;
+  d_pixelsPerMeter := TGameConfig.PIXELS_PER_METER;;
+
+  // create main game objects
+  d_player := TPlayer.Create;
+  d_obstacleManager := TObstacleManager.Create;
+  d_assets := TAssetManager.Create;
+  d_backgrounds := TObjectList<TBackgroundLayer>.Create(True);
+
+  d_isRunning := False;
+  d_gameOver := False;
+  d_survivalTime := 0;
+  d_worldScrollX := 0;
+
+  // player draw sizes
+  d_playerNormalW := TGameConfig.PLAYER_NORMAL_WIDTH;
+  d_playerNormalH := TGameConfig.PLAYER_NORMAL_HEIGHT;
+  d_playerJetpackW := TGameConfig.PLAYER_JETPACK_WIDTH;
+  d_playerJetpackH := TGameConfig.PLAYER_JETPACK_HEIGHT;
+
+  // demon start values
+  d_imgDemon := nil;
+  d_demonState := dsHidden;
+  d_demonFrameIndex := 0;
+  d_demonAnimTimer := 0;
+  d_demonW := TGameConfig.DEMON_WIDTH;
+  d_demonH := TGameConfig.DEMON_HEIGHT;
+  d_nextDemonMeter := TGameConfig.DEMON_FIRST_METER;
+
+  d_remotePlayerRenderer := TRemotePlayerRenderer.Create;
+  d_collisionEnabled := True;
+  d_isHostMode := True;
+  d_restartProtectionTimer := 0;
+  d_cameraX := 0;
+  d_worldPlayerX := 0;
+
+  d_lastFrontPlayerWorldX := 0;
+  d_obstacleSpawnWorldX := 0;
+
+  // for reuse
+  d_lastPlayerFrame := -1;
+  d_lastPlayerState := psIdle;
+  d_lastDemonFrame := -1;
+  d_lastPatatoFrame:= -1;
+  d_lastJetpackUpFrame:= -1;
+  d_lastJetpackFlyFrame:= -1;
+  d_lastDragonFrame:= -1;
+  d_lastObstacleFrame:= -1;
+  d_obstacleImages := TObjectList<TImage>.Create(True);
+end;
+
+destructor TGameEngine.Destroy;
+begin
+  FreeAndNil(d_player);
+  FreeAndNil(d_obstacleManager);
+  FreeAndNil(d_obstacleImages);
+  FreeAndNil(d_backgrounds);
+  FreeAndNil(d_assets);
+  FreeAndNil(d_remotePlayerRenderer);
+  inherited;
+end;
+
+procedure TGameEngine.RebuildBackgrounds;
+begin
+  if not Assigned(d_imgPlayer) or not Assigned(d_imgPlayer.Parent) then
+    Exit;
+
+  // remove old background layers
+  d_backgrounds.Clear;
+
+  // parallax values
+  // 0.2 moves slow and looks far away
+  // 0.5 moves faster and looks closer
+  // 1.0 moves with full speed and looks near
+   d_backgrounds.Add(TBackgroundLayer.Create(d_imgPlayer.Parent, d_assets.BgFarBitmap, TGameConfig.BACKGROUND_FAR_SPEED));
+   d_backgrounds.Add(TBackgroundLayer.Create(d_imgPlayer.Parent, d_assets.BgMidBitmap, TGameConfig.BACKGROUND_MID_SPEED));
+   d_backgrounds.Add(TBackgroundLayer.Create(d_imgPlayer.Parent, d_assets.BgFrontBitmap, TGameConfig.BACKGROUND_FRONT_SPEED));;
+
+  ApplyLayerOrder;
+end;
+
+procedure TGameEngine.ApplyLayerOrder;
+var
+  img: TImage;
+begin
+  if d_backgrounds.Count < 3 then
+    Exit;
+
+  // far background goes behind everything
+  d_backgrounds[0].SendToBack;
+
+  // middle background is above far background
+  d_backgrounds[1].BringToFront;
+
+  // demon is placed between middle and front background
+  if Assigned(d_imgDemon) then
+    d_imgDemon.BringToFront;
+
+  // front background is above demon
+  d_backgrounds[2].BringToFront;
+
+  for img in d_obstacleImages do
+    img.BringToFront;
+
+  if Assigned(d_remotePlayerRenderer) then
+    d_remotePlayerRenderer.BringToFront;
+
+  if Assigned(d_imgPlayer) then
+    d_imgPlayer.BringToFront;
+
+  if Assigned(d_imgObstacleTemplate) then
+    d_imgObstacleTemplate.BringToFront;
+end;
+
+procedure TGameEngine.SetCanvasSize(const aWidth: Single; const aHeight: Single);
+var
+  playerH, obstacleH: Single;
+  bg: TBackgroundLayer;
+begin
+  if (aWidth <= 0) or (aHeight <= 0) then
+    Exit;
+
+  if Assigned(d_imgPlayer) then
+    playerH := d_imgPlayer.Height
+  else
+    playerH := 64;
+
+  if Assigned(d_imgObstacleTemplate) then
+    obstacleH := d_imgObstacleTemplate.Height
+  else
+    obstacleH := 64;
+
+  // player starts on the left side of the screen
+  d_player_x := TGameConfig.PLAYER_START_X;
+
+  // y position is screen height minus player height
+  // this places the bottom of the player on the ground
+  d_player_y := aHeight - playerH;
+
+  // obstacles spawn a bit outside the right side
+  // this makes them move into view instead of suddenly appearing
+  d_obstacle_x := aWidth + 40;
+  d_obstacle_y := aHeight - obstacleH;
+
+  if Assigned(d_obstacleManager) then
+    d_obstacleManager.SetDragonSpawnYRange(TGameConfig.DRAGON_SPAWN_MIN_Y, aHeight * 0.55);
+
+  if Assigned(d_player) then
+  begin
+    d_player.SetPosition(TPointF.Create(d_player_x, d_player_y));
+    d_player.SetGroundY(d_player_y);
+  end;
+
+  for bg in d_backgrounds do
+    bg.Resize(aWidth, aHeight);
+end;
+
+procedure TGameEngine.Initialize(AForm: TForm);
+var
+  GameContainer: TComponent;
+begin
+  if not Assigned(AForm) then
+    raise Exception.Create('game form is not assigned');
+
+  d_form := AForm;
+
+  GameContainer := d_form.FindComponent('layGameContainer');
+
+  if not Assigned(GameContainer) then
+    raise Exception.Create('laygamecontainer was not found');
+
+  d_imgPlayer := GameContainer.FindComponent('imgPlayer') as TImage;
+
+  if not Assigned(d_imgPlayer) then
+    raise Exception.Create('imgplayer was not found');
+
+  d_imgObstacleTemplate := GameContainer.FindComponent('imgObstacle1') as TImage;
+
+  if not Assigned(d_imgObstacleTemplate) then
+    raise Exception.Create('imgobstacle1 was not found');
+
+  d_assets.LoadThemeAssets;
+
+  d_obstacleManager.SetPotatoTotalFrames(d_assets.GetPotatoFrameCount);
+  d_obstacleManager.SetDragonTotalFrames(d_assets.GetDragonFrameCount);
+  d_obstacleManager.SetTotalFrames(d_assets.GetObstacleFrameCount);
+
+
+
+  d_imgPlayer.Width := TGameConfig.PLAYER_NORMAL_WIDTH;
+  d_imgPlayer.Height := TGameConfig.PLAYER_NORMAL_HEIGHT;
+  d_imgPlayer.HitTest := False;
+  d_imgPlayer.WrapMode := TImageWrapMode.Fit;
+  d_imgPlayer.RotationCenter.X := 0.5;
+  d_imgPlayer.RotationCenter.Y := 0.5;
+
+  if Assigned(d_remotePlayerRenderer) then
+  d_remotePlayerRenderer.Initialize(
+    d_form,
+    d_imgPlayer.Parent as TControl,
+    d_imgPlayer,
+    d_assets
+  );
+
+  d_imgObstacleTemplate.Width := TGameConfig.OBSTACLE_NORMAL_WIDTH;
+  d_imgObstacleTemplate.Height := TGameConfig.OBSTACLE_NORMAL_HEIGHT;
+  d_imgObstacleTemplate.HitTest := False;
+
+  Randomize;
+
+  d_obstacleManager.SetSpeed(TGameConfig.OBSTACLE_SPEED);
+  d_obstacleManager.Initialize;
+
+  RebuildBackgrounds;
+
+  d_imgDemon := TImage.Create(d_imgPlayer.Parent);
+  d_imgDemon.Parent := d_imgPlayer.Parent;
+  d_imgDemon.Width := d_demonW;
+  d_imgDemon.Height := d_demonH;
+  d_imgDemon.WrapMode := TImageWrapMode.Fit;
+  d_imgDemon.HitTest := False;
+  d_imgDemon.Stored := False;
+  d_imgDemon.Visible := False;
+
+  ApplyLayerOrder;
+end;
+
+procedure TGameEngine.StartGame;
+begin
+  StartGameWithOptions(True);
+  ApplyLayerOrder;
+end;
+
+procedure TGameEngine.StopGame;
+begin
+  d_isRunning := False;
+end;
+
+procedure TGameEngine.GameOver;
+begin
+  if d_gameOver then
+    Exit;
+
+  // keep the game loop alive for multiplayer sync
+  d_gameOver := True;
+  d_player.ChangeState(psDead);
+
+  if Assigned(d_player) then
+    d_player.StopSpeedBoost;
+
+  if Assigned(d_onGameOver) then
+    d_onGameOver;
+end;
+
+procedure TGameEngine.RestartGame(const AResetObstacles: Boolean);
+begin
+  StartGameWithOptions(AResetObstacles);
+
+  if not AResetObstacles then
+    d_restartProtectionTimer := TGameConfig.RESTART_PROTECTION_TIME;
+
+  ApplyLayerOrder;
+end;
+
+procedure TGameEngine.HandleJump;
+begin
+  if d_isRunning and not d_gameOver and Assigned(d_player) then
+    d_player.Jump;
+end;
+
+procedure TGameEngine.Update(const ADeltaTime: Single; const MoveLeft, MoveRight, MoveUp, MoveDown: Boolean);
+var
+  bg: TBackgroundLayer;
+  playerPos: TPointF;
+  mid: Single;
+  scrollVelocity: Single;
+  hitObstacle: TObstacle;
+  targetY: Single;
+  parentControl: TControl;
+  spawnBaseX: Single;
+begin
+  try
+    // bad delta time can break movement math, so ignore it
+    if ADeltaTime <= 0 then
+      Exit;
+
+    if not d_isRunning then
+      Exit;
+
+    if not Assigned(d_player) or not Assigned(d_obstacleManager) then
+      Exit;
+
+    if not Assigned(d_imgPlayer) or not Assigned(d_imgPlayer.Parent) then
+      Exit;
+
+    parentControl := d_imgPlayer.Parent as TControl;
+    scrollVelocity := 0;
+
+    // if game over, keep obstacle sync alive for multiplayer
+    if d_gameOver then
+    begin
+      d_worldPlayerX := d_cameraX + d_player.GetPosition.X;
+
+      if d_isHostMode then
+      begin
+        spawnBaseX := GetSafeSpawnBaseX(parentControl.Width);
+
+        d_obstacleManager.SetSpawnPosition(
+          TPointF.Create(spawnBaseX, d_obstacle_y)
+        );
+
+        d_obstacleManager.Update(
+          ADeltaTime,
+          d_player,
+          True,
+          GetFrontPlayerSpeed(ADeltaTime)
+        );
+
+        d_obstacleManager.RemoveObstaclesLeftOf(GetLastPlayerWorldX - TGameConfig.REMOVE_OBSTACLE_MARGIN);
+      end
+      else
+        d_obstacleManager.UpdateRemoteOnly(ADeltaTime);
+
+      Exit;
+    end;
+
+    d_player.Update(ADeltaTime, MoveLeft, MoveRight, MoveUp, MoveDown);
+
+    playerPos := d_player.GetPosition;
+
+    // middle of the screen
+    // width divided by 2 gives the center x position
+    mid := parentControl.Width / 2;
+
+    // distance score
+    // velocity is pixels per second
+    // velocity times delta time gives pixels moved this frame
+    // divide by pixels per meter to change pixels into meters
+    d_distanceMeters := d_distanceMeters + (Abs(d_player.GetVelocityX) * ADeltaTime / d_pixelsPerMeter);
+
+    // start demon event at 50 meters and then every 100 meters
+    if (d_demonState = dsHidden) and (d_distanceMeters >= d_nextDemonMeter) then
+      StartDemonEvent(parentControl);
+
+    UpdateDemon(ADeltaTime, parentControl);
+
+    // camera scroll logic
+    // player stays near the middle while the camera moves through the world
+    if (playerPos.X > mid) and (d_player.GetVelocityX > 0) then
+    begin
+      playerPos.X := mid;
+      d_player.SetPosition(playerPos);
+
+      // world moves with player speed
+      scrollVelocity := d_player.GetVelocityX;
+    end
+    else if (playerPos.X < d_player_x) and (d_player.GetVelocityX < 0) and (d_cameraX > 0) then
+    begin
+      playerPos.X := d_player_x;
+      d_player.SetPosition(playerPos);
+
+      // negative speed moves camera back left
+      scrollVelocity := d_player.GetVelocityX;
+    end
+    else if playerPos.X < d_player_x then
+    begin
+      playerPos.X := d_player_x;
+      d_player.SetPosition(playerPos);
+
+      // camera can not move more left
+      scrollVelocity := 0;
+    end;
+
+    // move camera
+    // speed times delta time gives how many pixels camera moves this frame
+    d_cameraX := d_cameraX + (scrollVelocity * ADeltaTime);
+
+    // do not allow camera to go before start of world
+    if d_cameraX < 0 then
+    begin
+      d_cameraX := 0;
+      scrollVelocity := 0;
+    end;
+
+    // world player x is real position in the world
+    // camera x is how far the world has scrolled
+    // player screen x is where player is drawn
+    d_worldPlayerX := d_cameraX + d_player.GetPosition.X;
+
+    for bg in d_backgrounds do
+      bg.Update(ADeltaTime, scrollVelocity);
+
+    // obstacle spawn x is in world space
+    // camera x plus screen spawn x means obstacle spawns ahead in the world
+
+    if d_isHostMode then
+    begin
+      spawnBaseX := GetSafeSpawnBaseX(parentControl.Width);
+
+      d_obstacleManager.SetSpawnPosition(
+        TPointF.Create(spawnBaseX, d_obstacle_y)
+      );
+
+      d_obstacleManager.SetDifficultyByMeters(d_distanceMeters);
+      d_obstacleManager.Update(
+        ADeltaTime,
+        d_player,
+        d_player.CurrentState = psJetpackFlying,
+        GetFrontPlayerSpeed(ADeltaTime)
+      );
+
+      if Assigned(d_remotePlayerRenderer) and d_remotePlayerRenderer.HasRemotePlayers then
+      begin
+        d_obstacleManager.EnsureObstacleNearPlayer(
+          GetLastPlayerWorldX,
+          parentControl.Width,
+          d_obstacle_y
+        );
+      end;
+
+
+      d_obstacleManager.RemoveObstaclesLeftOf(GetLastPlayerWorldX - TGameConfig.REMOVE_OBSTACLE_MARGIN);
+    end
+    else
+      d_obstacleManager.UpdateRemoteOnly(ADeltaTime);
+
+    // update timer for restart
+    if d_restartProtectionTimer > 0 then
+    begin
+      d_restartProtectionTimer := d_restartProtectionTimer - ADeltaTime;
+
+      if d_restartProtectionTimer < 0 then
+        d_restartProtectionTimer := 0;
+    end;
+
+    d_survivalTime := d_survivalTime + ADeltaTime;
+
+    d_scoreUpdateTimer := d_scoreUpdateTimer + ADeltaTime;
+
+    if d_scoreUpdateTimer >= TGameConfig.SCORE_UPDATE_INTERVAL then
+    begin
+      d_scoreUpdateTimer := 0;
+
+      if Assigned(d_onScoreUpdate) then
+        d_onScoreUpdate(d_distanceMeters);
+    end;
+
+        // block collision
+    if (not d_collisionEnabled) or (d_restartProtectionTimer > 0) then
+      Exit;
+
+    // collision uses world position
+    // player is normally stored as screen position
+    // so we temporarily put player x into world position
+    playerPos := d_player.GetPosition;
+    d_player.SetPosition(TPointF.Create(d_worldPlayerX, playerPos.Y));
+
+    hitObstacle := d_obstacleManager.GetCollidingObstacle(d_player);
+
+    // put player back to screen position
+    d_player.SetPosition(playerPos);
+
+    if Assigned(hitObstacle) then
+    begin
+     if hitObstacle.GetKind = okPotato then
+      begin
+        targetY := (parentControl.Height / 2) - (d_imgPlayer.Height / 2);
+
+        d_player.StartJetpack(targetY);
+        d_obstacleManager.RemoveObstacle(hitObstacle);
+      end
+      else if hitObstacle.GetKind = okRedbull then
+      begin
+        d_player.StartSpeedBoost(TGameConfig.REDBULL_PLAYER_SPEED_MULTIPLIER);
+        d_obstacleManager.RemoveObstacle(hitObstacle);
+      end
+      else
+      begin
+        GameOver;
+        Exit;
+      end;
+    end;
+
+
+
+  except
+    on E: Exception do
+      TErrorHandler.ReportError('game update error: ' + E.Message);
+  end;
+end;
+
+procedure TGameEngine.Render;
+var
+  frameIndex: Integer;
+  playerPos: TPointF;
+  obstacle: TObstacle;
+  img: TImage;
+  i: Integer;
+  angle: Single;
+  obstacleBitmap: TBitmap;
+begin
+  if not Assigned(d_imgPlayer) or not Assigned(d_player) or not Assigned(d_obstacleManager) then
+    Exit;
+
+  playerPos := d_player.GetPosition;
+
+  // reset of state
+  if d_lastPlayerState <> d_player.CurrentState then
+  begin
+    d_lastPlayerState := d_player.CurrentState;
+    d_lastPlayerFrame := -1;
+    d_lastDemonFrame := -1;
+    d_lastPatatoFrame:= -1;
+    d_lastJetpackUpFrame:= -1;
+    d_lastJetpackFlyFrame:= -1;
+    d_lastDragonFrame:= -1;
+    d_lastObstacleFrame:= -1;
+  end;
+
+  // jetpack sprites are bigger than normal sprites
+  if d_player.CurrentState in [psJetpackUp, psJetpackFlying] then
+  begin
+    d_imgPlayer.Width := d_playerJetpackW;
+    d_imgPlayer.Height := d_playerJetpackH;
+  end
+  else
+  begin
+    d_imgPlayer.Width := d_playerNormalW;
+    d_imgPlayer.Height := d_playerNormalH;
+  end;
+
+  // center bigger sprite around the normal player body
+  // width difference divided by 2 gives the extra space on each side
+  if d_player.CurrentState in [psJetpackUp, psJetpackFlying] then
+  begin
+    d_imgPlayer.Scale.X := 1;
+    d_imgPlayer.Position.X := playerPos.X - ((d_imgPlayer.Width - d_playerNormalW) / 2);
+  end
+  else if d_player.GetFacingRight then
+  begin
+    d_imgPlayer.Scale.X := 1;
+    d_imgPlayer.Position.X := playerPos.X - ((d_imgPlayer.Width - d_playerNormalW) / 2);
+  end
+  else
+  begin
+    // when flipped left, the image anchor changes
+    // this math keeps the player visually in the same place
+    d_imgPlayer.Scale.X := -1;
+    d_imgPlayer.Position.X := playerPos.X + d_playerNormalW + ((d_imgPlayer.Width - d_playerNormalW) / 2);
+  end;
+
+  // keep feet on the same ground line when sprite height changes
+  d_imgPlayer.Position.Y := playerPos.Y - (d_imgPlayer.Height - d_playerNormalH);
+
+  if d_player.CurrentState = psJetpackUp then
+  begin
+    d_imgPlayer.RotationAngle := 0;
+
+    if d_assets.d_jetpackUpFrames.Count > 0 then
+    begin
+      // timer times 10 means about 10 frames per second
+      // mod loops back to first frame after the last frame
+      frameIndex := Trunc(d_player.GetJetpackTimer * 10) mod d_assets.d_jetpackUpFrames.Count;
+      SetImageBitmapIfChanged(d_imgPlayer, d_assets.d_jetpackUpFrames[frameIndex], d_lastJetpackUpFrame, frameIndex);
+    end;
+  end
+  else if d_player.CurrentState = psJetpackFlying then
+  begin
+    d_imgPlayer.RotationAngle := 0;
+
+    if d_assets.d_jetpackFlyFrames.Count > 0 then
+    begin
+      frameIndex := Trunc(d_player.GetJetpackTimer * 10) mod d_assets.d_jetpackFlyFrames.Count;
+      SetImageBitmapIfChanged(d_imgPlayer, d_assets.d_jetpackFlyFrames[frameIndex], d_lastJetpackFlyFrame, frameIndex);
+    end;
+  end
+  else if d_player.GetIsInAir then
+  begin
+    d_imgPlayer.Bitmap.Assign(d_assets.d_jumpSprite);  // miss ook voor reuse, haal deze comment weg als ik dit heb gedaan
+
+    // spin while jumping
+    // 360 means one full turn
+    // air time divided by 0.6 means one full turn takes 0.6 seconds
+    angle := 360 * (d_player.GetAirTime / 0.6);
+    d_imgPlayer.RotationAngle := angle;
+  end
+  else
+  begin
+    d_imgPlayer.RotationAngle := 0;
+
+    if d_player.CurrentState = psRunning then
+    begin
+      frameIndex := d_player.GetCurrentSpriteIndex;
+
+      if (frameIndex >= 0) and (frameIndex < d_assets.d_playerFrames.Count) then
+        SetImageBitmapIfChanged(d_imgPlayer, d_assets.d_playerFrames[frameIndex], d_lastPlayerFrame, frameIndex);
+    end
+    else if d_assets.d_playerFrames.Count > 0 then
+      d_imgPlayer.Bitmap.Assign(d_assets.d_playerFrames[0]);
+  end;
+
+  if Assigned(d_imgDemon) and (d_demonState <> dsHidden) and (d_assets.DemonFrames.Count > 0) then
+  begin
+    d_demonFrameIndex := EnsureRange(d_demonFrameIndex, 0, d_assets.DemonFrames.Count - 1);
+
+    SetImageBitmapIfChanged(
+      d_imgDemon,
+      d_assets.DemonFrames[d_demonFrameIndex],
+      d_lastDemonFrame,
+      d_demonFrameIndex
+    );
+
+    d_imgDemon.Width := d_demonW;
+    d_imgDemon.Height := d_demonH;
+  end;
+
+  // make enough image components for all obstacles
+  //while (d_obstacleImages.Count < d_obstacleManager.GetObstacles.Count) and (d_obstacleImages.Count < MAX_OBSTACLE_IMAGES) do
+  while d_obstacleImages.Count < d_obstacleManager.GetObstacles.Count do
+  begin
+    img := TImage.Create(d_form);
+    img.Parent := d_imgPlayer.Parent;
+    img.Width := TGameConfig.OBSTACLE_NORMAL_WIDTH;
+    img.Height := TGameConfig.OBSTACLE_NORMAL_HEIGHT;
+    img.WrapMode := TImageWrapMode.Fit;
+    img.HitTest := False;
+    img.BringToFront;
+    d_obstacleImages.Add(img);
+  end;
+
+  //for i := 0 to Min(d_obstacleManager.GetObstacles.Count, d_obstacleImages.Count) - 1 do
+  for i := 0 to d_obstacleManager.GetObstacles.Count - 1 do
+  begin
+    obstacle := d_obstacleManager.GetObstacles[i];
+    img := d_obstacleImages[i];
+    img.Visible := True;
+
+    img.Width := obstacle.GetSize.Width;
+    img.Height := obstacle.GetSize.Height;
+
+    obstacleBitmap := d_assets.GetObstacleBitmap(obstacle.GetKind, obstacle.GetFrameIndex);
+
+    if Assigned(obstacleBitmap) then
+      img.Bitmap.Assign(obstacleBitmap);
+
+    // convert world x to screen x
+    // obstacle x is stored in the world
+    // camera x is how far the world is scrolled
+    // world x minus camera x gives draw position on screen
+    img.Position.X := obstacle.GetPosition.X - d_cameraX;
+    img.Position.Y := obstacle.GetPosition.Y;
+  end;
+
+  // hide image components that are not used this frame
+  for i := d_obstacleManager.GetObstacles.Count to d_obstacleImages.Count - 1 do
+    d_obstacleImages[i].Visible := False;
+
+end;
+
+
+
+
+procedure TGameEngine.UpdateRemotePlayer(const AName: string; const AX, AY: Single; const AState, AFrame: Integer; const AFacingRight: Boolean; const AAirTime: Single);
+begin
+  if not Assigned(d_remotePlayerRenderer) then
+    Exit;
+
+  d_remotePlayerRenderer.UpdateRemotePlayer(
+    AName,
+    AX,
+    AY,
+    AState,
+    AFrame,
+    AFacingRight,
+    AAirTime,
+    d_cameraX
+  );
+end;
+
+// this reads obstacle data that came from the host
+// netid is used to find the same obstacle again next time
+// x and y are the wanted place on the map
+// w and h are the size of the obstacle
+// seenids is used to remember which obstacles still exist on the host
+//procedure TGameEngine.ApplyObstacleSyncText(const AText: string);
+//var
+//  DataText: string;
+//  ObstacleParts: TArray<string>;
+//  Values: TArray<string>;
+//  I: Integer;
+//  J: Integer;
+//  O: TObstacle;
+//  Found: Boolean;
+//  NetId: Integer;
+//  KindValue: Integer;
+//  Kind: TObstacleKind;
+//  X: Single;
+//  Y: Single;
+//  W: Single;
+//  H: Single;
+//  FrameIndex: Integer;
+//  FS: TFormatSettings;
+//  SeenIds: TList<Integer>;
+//begin
+//  if not Assigned(d_obstacleManager) then
+//    Exit;
+//
+//  SeenIds := nil;
+//
+//  try
+//    // this makes sure decimal numbers use a dot
+//    // example 12.5 works the same on every pc
+//    FS := TFormatSettings.Invariant;
+//    DataText := AText;
+//
+//    // the server sends messages with obstacles| in front
+//    // this removes that part so only the real data is left
+//    if Pos('obstacles|', DataText) = 1 then
+//      Delete(DataText, 1, Length('obstacles|'));
+//
+//    // if the host sends no obstacle data, this client must also remove all obstacles
+//    if Trim(DataText) = '' then
+//    begin
+//      d_obstacleManager.ClearObstacles;
+//      Exit;
+//    end;
+//
+//    SeenIds := TList<Integer>.Create;
+//
+//    // this cuts the full text into small obstacle blocks
+//    ObstacleParts := DataText.Split([';']);
+//
+//    for I := 0 to Length(ObstacleParts) - 1 do
+//    begin
+//      // this cuts one obstacle block into separate values
+//      Values := ObstacleParts[I].Split([',']);
+//
+//      // the obstacle needs at least 7 values
+//      // if less values are received, this block is broken and skipped
+//      if Length(Values) < 7 then
+//        Continue;
+//
+//      NetId := StrToIntDef(Values[0], 0);
+//      KindValue := StrToIntDef(Values[1], 0);
+//
+//      // skip invalid network data
+//      if NetId <= 0 then
+//        Continue;
+//
+//      // kindvalue is a number that must fit inside the obstacle kind list
+//      // low is the first allowed kind
+//      // high is the last allowed kind
+//      // if the number is outside that range, it could crash later, so it is skipped
+//      if (KindValue < Ord(Low(TObstacleKind))) or (KindValue > Ord(High(TObstacleKind))) then
+//        Continue;
+//
+//      Kind := TObstacleKind(KindValue);
+//
+//      // these values come from text, so they are changed back into numbers
+//      // strtofloatdef uses a safe default when the value is broken
+//      // max makes sure width and height can never become 0 or negative
+//      X := StrToFloatDef(Values[2], 0, FS);
+//      Y := StrToFloatDef(Values[3], 0, FS);
+//      W := Max(1, StrToFloatDef(Values[4], TGameConfig.OBSTACLE_NORMAL_WIDTH, FS));
+//      H := Max(1, StrToFloatDef(Values[5], TGameConfig.OBSTACLE_NORMAL_HEIGHT, FS));
+//      FrameIndex := Max(0, StrToIntDef(Values[6], 0));
+//
+//      // this id was received from the host
+//      // later we remove every local obstacle that was not seen in this new list
+//      if SeenIds.IndexOf(NetId) = -1 then
+//        SeenIds.Add(NetId);
+//
+//      O := nil;
+//      Found := False;
+//
+//      // search if this obstacle already exists on this client
+//      // this is a simple loop through all local obstacles
+//      // when the same netid is found, we update that obstacle instead of making a new one
+//      for J := 0 to d_obstacleManager.GetObstacles.Count - 1 do
+//      begin
+//        if d_obstacleManager.GetObstacles[J].GetNetId = NetId then
+//        begin
+//          O := d_obstacleManager.GetObstacles[J];
+//          Found := True;
+//          Break;
+//        end;
+//      end;
+//
+//      // if no obstacle with this netid exists yet, make it
+//      if not Found then
+//      begin
+//        O := d_obstacleManager.GetObstacleFromPool;
+//        O.SetNetId(NetId);
+//
+//        // dragon uses a bigger default value
+//        // the other obstacle kinds use the normal default value
+//        case Kind of
+//          okDragon:
+//            O.Initialize(TPointF.Create(X, Y), TGameConfig.OBSTACLE_SPEED * TGameConfig.DRAGON_SPEED_MULTIPLIER);
+//        else
+//          O.Initialize(TPointF.Create(X, Y), TGameConfig.OBSTACLE_SPEED);
+//        end;
+//
+//        d_obstacleManager.GetObstacles.Add(O);
+//      end;
+//
+//      // update all values with the newest data from the host
+//      O.SetKind(Kind);
+//      O.SetSize(W, H);
+//      O.SetFrameIndex(FrameIndex);
+//
+//      // this does not instantly teleport the obstacle
+//      // the obstacle can move smoothly toward this target in its own update code
+//      O.SetRemoteTarget(TPointF.Create(X, Y));
+//
+//      // each obstacle type can have a different amount of animation frames
+//      // max makes sure the number is always at least 1
+//      // this prevents divide by zero or invalid frame logic in animation code
+//      case Kind of
+//        okPotato:
+//          O.SetTotalFrames(Max(1, d_assets.d_potatoFrames.Count));
+//
+//        okDragon:
+//          O.SetTotalFrames(Max(1, d_assets.d_dragonFrames.Count));
+//      else
+//        O.SetTotalFrames(Max(1, d_assets.d_obstacleFrames.Count));
+//      end;
+//    end;
+//
+//    // remove obstacles that are not in the latest host sync text
+//    // this loop goes backwards because deleting changes the list numbers
+//    // example: if item 2 is deleted, item 3 moves to place 2
+//    // going backwards prevents skipping an item
+//    for J := d_obstacleManager.GetObstacles.Count - 1 downto 0 do
+//    begin
+//      if not SeenIds.Contains(d_obstacleManager.GetObstacles[J].GetNetId) then
+//        d_obstacleManager.RemoveObstacle(d_obstacleManager.GetObstacles[J]);
+//    end;
+//
+//  except
+//    on E: Exception do
+//    begin
+//      TErrorHandler.ReportError('obstacle sync error: ' + E.Message);
+//    end;
+//  end;
+//
+//  SeenIds.Free;
+//end;
+
+
+procedure TGameEngine.ChangeDemonState(const ANewState: TDemonState);
+begin
+  try
+    if d_demonState = ANewState then
+      Exit;
+
+    d_demonState := ANewState;
+
+    case d_demonState of
+      dsHidden:
+        begin
+          // hide demon and reset animation
+          d_demonFrameIndex := 0;
+          d_demonAnimTimer := 0;
+
+          if Assigned(d_imgDemon) then
+            d_imgDemon.Visible := False;
+        end;
+
+      dsMovingUp:
+        begin
+          // demon starts below the screen and moves up
+          d_demonFrameIndex := 0;
+          d_demonAnimTimer := 0;
+
+          if Assigned(d_imgDemon) then
+            d_imgDemon.Visible := True;
+        end;
+
+      dsShowing:
+        begin
+          // demon is in the middle and keeps playing animation
+        end;
+
+      dsMovingDown:
+        begin
+          // demon moves down until it leaves the screen
+        end;
+    end;
+  except
+    on E: Exception do
+      TErrorHandler.ReportError('demon change state error: ' + E.Message);
+  end;
+end;
+
+procedure TGameEngine.StartDemonEvent(const AParent: TControl);
+begin
+  try
+    if not Assigned(AParent) then
+      Exit;
+
+    // place demon in the horizontal center
+    d_demonX := (AParent.Width - d_demonW) / 2;
+
+    // start below the screen
+    d_demonY := AParent.Height;
+
+    d_demonFrameIndex := 0;
+    d_demonAnimTimer := 0;
+
+    if Assigned(d_imgDemon) then
+    begin
+      d_imgDemon.Width := d_demonW;
+      d_imgDemon.Height := d_demonH;
+      d_imgDemon.Position.X := d_demonX;
+      d_imgDemon.Position.Y := d_demonY;
+      d_imgDemon.Visible := True;
+    end;
+
+    // set next meter moment for the next demon event
+    d_nextDemonMeter := d_nextDemonMeter + TGameConfig.DEMON_INTERVAL_METER;
+
+    ChangeDemonState(dsMovingUp);
+  except
+    on E: Exception do
+      TErrorHandler.ReportError('start demon event error: ' + E.Message);
+  end;
+end;
+
+procedure TGameEngine.UpdateDemon(const ADeltaTime: Single; const AParent: TControl);
+var
+  TargetY: Single;
+begin
+  try
+    if ADeltaTime <= 0 then
+      Exit;
+
+    if not Assigned(AParent) then
+      Exit;
+
+    if d_demonState = dsHidden then
+      Exit;
+
+    // keep demon centered when the screen size changes
+    d_demonX := (AParent.Width - d_demonW) / 2;
+
+    // middle y position of the screen
+    TargetY := (AParent.Height - d_demonH) / 2;
+
+    // update animation timer
+    d_demonAnimTimer := d_demonAnimTimer + ADeltaTime;
+
+    if d_demonAnimTimer >= TGameConfig.DEMON_ANIM_SPEED then
+    begin
+      if d_demonFrameIndex < d_assets.DemonFrames.Count - 1 then
+        Inc(d_demonFrameIndex);
+
+      d_demonAnimTimer := 0;
+    end;
+
+    case d_demonState of
+      dsMovingUp:
+        begin
+          // move demon up until it reaches the middle
+          d_demonY := d_demonY - (TGameConfig.DEMON_MOVE_SPEED * ADeltaTime);
+
+          if d_demonY <= TargetY then
+          begin
+            d_demonY := TargetY;
+            ChangeDemonState(dsShowing);
+          end;
+        end;
+
+      dsShowing:
+        begin
+          // wait until the animation reaches the frame where demon must leave
+          if d_demonFrameIndex >= TGameConfig.DEMON_MOVE_DOWN_FRAME then
+            ChangeDemonState(dsMovingDown);
+        end;
+
+      dsMovingDown:
+        begin
+          // move demon down until it is outside the screen
+          d_demonY := d_demonY + (TGameConfig.DEMON_MOVE_SPEED * ADeltaTime);
+
+          if d_demonY > AParent.Height then
+            ChangeDemonState(dsHidden);
+        end;
+    end;
+
+    if Assigned(d_imgDemon) then
+    begin
+      d_imgDemon.Position.X := d_demonX;
+      d_imgDemon.Position.Y := d_demonY;
+    end;
+  except
+    on E: Exception do
+      TErrorHandler.ReportError('update demon error: ' + E.Message);
+  end;
+end;
+
+
+//setters getters
+
+procedure TGameEngine.SetOnScoreUpdate(const ACallback: TProc<Single>);
+begin
+  d_onScoreUpdate := ACallback;
+end;
+
+procedure TGameEngine.SetOnGameOver(const ACallback: TProc);
+begin
+  d_onGameOver := ACallback;
+end;
+
+//function TGameEngine.GetPlayerSyncText(const APlayerName: string): string;
+//var
+//  P: TPointF;
+//  FS: TFormatSettings;
+//begin
+//  if not Assigned(d_player) then
+//    Exit('');
+//
+//  FS := TFormatSettings.Invariant;
+//  P := d_player.GetPosition;
+//
+//  Result := Format(
+//    'state|%s|%.2f|%.2f|%d|%d|%d|%.2f|%.0f',
+//    [
+//      APlayerName,
+//      d_worldPlayerX,
+//      P.Y,
+//      Ord(d_player.CurrentState),
+//      d_player.GetCurrentSpriteIndex,
+//      Ord(d_player.GetFacingRight),
+//      d_player.GetAirTime,
+//      d_distanceMeters
+//    ],
+//    FS
+//  );
+//end;
+procedure TGameEngine.ApplyObstacleSyncText(const AText: string);
+begin
+  TGameNetworkSync.ApplyObstacleSyncText(
+    AText,
+    d_obstacleManager,
+    d_assets
+  );
+end;
+
+function TGameEngine.GetPlayerSyncText(const APlayerName: string): string;
+begin
+  Result := TGameNetworkSync.GetPlayerSyncText(
+    APlayerName,
+    d_player,
+    d_worldPlayerX,
+    d_distanceMeters
+  );
+end;
+
+function TGameEngine.GetObstacleSyncText: string;
+begin
+  Result := TGameNetworkSync.GetObstacleSyncText(d_obstacleManager);
+end;
+
+procedure TGameEngine.SetCollisionEnabled(const AValue: Boolean);
+begin
+  d_collisionEnabled := AValue;
+end;
+
+procedure TGameEngine.SetHostMode(const AValue: Boolean);
+begin
+  try
+    // do nothing if the value did not change
+    if d_isHostMode = AValue then
+      Exit;
+
+    d_isHostMode := AValue;
+
+    // when this client becomes host, old remote obstacles must become normal moving obstacles
+    if d_isHostMode and Assigned(d_obstacleManager) then
+      d_obstacleManager.TakeOwnershipOfObstacles;
+  except
+    on E: Exception do
+      TErrorHandler.ReportError('set host mode error: ' + E.Message);
+  end;
+end;
+
+//function TGameEngine.GetObstacleSyncText: string;
+//var
+//  I: Integer;
+//  O: TObstacle;
+//  P: TPointF;
+//  S: TSizeF;
+//  FS: TFormatSettings;
+//begin
+//  FS := TFormatSettings.Invariant;
+//  Result := 'obstacles|';
+//
+//  if not Assigned(d_obstacleManager) then
+//    Exit;
+//
+//  for I := 0 to d_obstacleManager.GetObstacles.Count - 1 do
+//  begin
+//    O := d_obstacleManager.GetObstacles[I];
+//    P := O.GetPosition;
+//    S := O.GetSize;
+//
+//    if I > 0 then
+//      Result := Result + ';';
+//
+//    Result := Result + Format(
+//      '%d,%d,%.2f,%.2f,%.2f,%.2f,%d',
+//      [
+//        O.GetNetId,
+//        Ord(O.GetKind),
+//        P.X,
+//        P.Y,
+//        S.Width,
+//        S.Height,
+//        O.GetFrameIndex
+//      ],
+//      FS
+//    );
+//  end;
+//end;
+
+function TGameEngine.GetLastPlayerWorldX: Single;
+begin
+  Result := d_worldPlayerX;
+
+  if Assigned(d_remotePlayerRenderer) then
+    Result := d_remotePlayerRenderer.GetLastPlayerWorldX(d_worldPlayerX);
+end;
+
+function TGameEngine.GetFrontPlayerWorldX: Single;
+begin
+  Result := d_worldPlayerX;
+
+  if Assigned(d_remotePlayerRenderer) then
+    Result := d_remotePlayerRenderer.GetFrontPlayerWorldX(d_worldPlayerX);
+end;
+
+procedure TGameEngine.SetImageBitmapIfChanged(AImage: TImage; ABitmap: TBitmap; var ALastFrame: Integer; ANewFrame: Integer);
+begin
+  if not Assigned(AImage) or not Assigned(ABitmap) then
+    Exit;
+
+  if ALastFrame = ANewFrame then
+    Exit;
+
+  AImage.Bitmap.Assign(ABitmap);
+  ALastFrame := ANewFrame;
+end;
+
+function TGameEngine.GetFrontPlayerSpeed(const ADeltaTime: Single): Single;
+var
+  FrontX: Single;
+begin
+  Result := 0;
+
+  try
+    if ADeltaTime <= 0 then
+      Exit;
+
+    FrontX := GetFrontPlayerWorldX;
+
+    // never use backwards movement for spawning
+    if FrontX <= d_lastFrontPlayerWorldX then
+      Exit;
+
+    // calculate forward speed of the front player
+    Result := (FrontX - d_lastFrontPlayerWorldX) / ADeltaTime;
+
+    // stop one big jump from spawning many obstacles after restart
+    Result := Min(Result, TGameConfig.MAX_FRONT_PLAYER_SPEED);
+
+    // save the highest known front position
+    d_lastFrontPlayerWorldX := FrontX;
+  except
+    on E: Exception do
+      TErrorHandler.ReportError('get front player speed error: ' + E.Message);
+  end;
+end;
+
+function TGameEngine.GetSafeSpawnBaseX(const AParentWidth: Single): Single;
+var
+  FrontX: Single;
+  WantedSpawnX: Single;
+begin
+  Result := d_obstacleSpawnWorldX;
+
+  try
+    FrontX := GetFrontPlayerWorldX;
+
+    // spawn must be in front of the front player
+    WantedSpawnX := FrontX + AParentWidth + TGameConfig.SPAWN_RIGHT_MARGIN;
+
+    // spawn line may only move to the right
+    if WantedSpawnX > d_obstacleSpawnWorldX then
+      d_obstacleSpawnWorldX := WantedSpawnX;
+
+    Result := d_obstacleSpawnWorldX;
+  except
+    on E: Exception do
+      TErrorHandler.ReportError('get safe spawn base x error: ' + E.Message);
+  end;
+end;
+
+end.

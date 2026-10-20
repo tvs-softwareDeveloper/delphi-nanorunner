@@ -1,0 +1,338 @@
+unit GameNetworkSyncUnit;
+
+interface
+
+uses
+  System.SysUtils, System.Types, System.Generics.Collections, System.Math,
+  PlayerUnit, ObstacleUnit, ObstacleManagerUnit, AssetManagerUnit,
+  GameConfigUnit, ErrorHandlerUnit;
+
+type   // an enum for logging so we can see the status of synced texts
+  TNetworkSyncState = (
+    nssIdle,
+    nssReading,
+    nssApplied,
+    nssEmpty,
+    nssInvalid,
+    nssError
+  );
+
+  TGameNetworkSync = class
+  public
+    // this is a class function because this unit does not need to remember its own data
+    // it only reads player data and turns it into text for the network
+    // because of class function, you can call it like this:
+    // TGameNetworkSync.GetPlayerSyncText(...)
+    // so you do not need to create an object with TGameNetworkSync.Create
+    class function GetPlayerSyncText(
+      const APlayerName: string;
+      const APlayer: TPlayer;
+      const AWorldPlayerX: Single;
+      const ADistanceMeters: Single
+    ): string;
+
+    // this is a class function because it only reads all active obstacles
+    // then it turns every obstacle into one text line that can be sent to other players
+    class function GetObstacleSyncText(
+      const AObstacleManager: TObstacleManager
+    ): string;
+
+    // this is a class procedure because it changes existing obstacle data
+    // it reads text from the host and updates the local obstacle list
+    // it does not need its own saved fields, so class procedure is enough
+    class function ApplyObstacleSyncText(
+      const AText: string;
+      const AObstacleManager: TObstacleManager;
+      const AAssets: TAssetManager
+    ): TNetworkSyncState;
+  end;
+
+implementation
+
+class function TGameNetworkSync.GetPlayerSyncText(
+  const APlayerName: string;
+  const APlayer: TPlayer;
+  const AWorldPlayerX: Single;
+  const ADistanceMeters: Single
+): string;
+var
+  P: TPointF;
+  FS: TFormatSettings;
+begin
+  Result := '';
+
+  try
+    // no player means there is nothing to send
+    if not Assigned(APlayer) then
+      Exit;
+
+    // invariant format makes sure decimal numbers always use a dot
+    // this is important because another pc can have different number settings
+    FS := TFormatSettings.Invariant;
+
+    // get player screen position
+    // x is not used here because we send world x separately
+    P := APlayer.GetPosition;
+
+    // this text is sent to other players
+    // format:
+    // state name worldx y state frame facing airtime distance
+    Result := Format(
+      'state|%s|%.2f|%.2f|%d|%d|%d|%.2f|%.0f',
+      [
+        APlayerName,
+        AWorldPlayerX,
+        P.Y,
+        Ord(APlayer.CurrentState),
+        APlayer.GetCurrentSpriteIndex,
+        Ord(APlayer.GetFacingRight),
+        APlayer.GetAirTime,
+        ADistanceMeters
+      ],
+      FS
+    );
+  except
+    on E: Exception do
+      TErrorHandler.ReportError('get player sync text error: ' + E.Message);
+  end;
+end;
+
+class function TGameNetworkSync.GetObstacleSyncText(
+  const AObstacleManager: TObstacleManager
+): string;
+var
+  I: Integer;
+  O: TObstacle;
+  P: TPointF;
+  S: TSizeF;
+  FS: TFormatSettings;
+begin
+  Result := 'obstacles|';
+
+  try
+    // no obstacle manager means there are no obstacles to send
+    if not Assigned(AObstacleManager) then
+      Exit;
+
+    FS := TFormatSettings.Invariant;
+
+    // loop through all active obstacles
+    // every obstacle becomes one small text block
+    for I := 0 to AObstacleManager.GetObstacles.Count - 1 do
+    begin
+      O := AObstacleManager.GetObstacles[I];
+
+      if not Assigned(O) then
+        Continue;
+
+      P := O.GetPosition;
+      S := O.GetSize;
+
+      // separate obstacles with this sign
+      // example:
+      // obstacle1;obstacle2;obstacle3
+      if I > 0 then
+        Result := Result + ';';
+
+      // one obstacle is saved as:
+      // netid kind x y width height frame
+      Result := Result + Format(
+        '%d,%d,%.2f,%.2f,%.2f,%.2f,%d',
+        [
+          O.GetNetId,
+          Ord(O.GetKind),
+          P.X,
+          P.Y,
+          S.Width,
+          S.Height,
+          O.GetFrameIndex
+        ],
+        FS
+      );
+    end;
+  except
+    on E: Exception do
+      TErrorHandler.ReportError('get obstacle sync text error: ' + E.Message);
+  end;
+end;
+
+class function TGameNetworkSync.ApplyObstacleSyncText(
+  const AText: string;
+  const AObstacleManager: TObstacleManager;
+  const AAssets: TAssetManager
+): TNetworkSyncState;
+var
+  DataText: string;
+  ObstacleParts: TArray<string>;
+  Values: TArray<string>;
+  I: Integer;
+  J: Integer;
+  O: TObstacle;
+  Found: Boolean;
+  NetId: Integer;
+  KindValue: Integer;
+  Kind: TObstacleKind;
+  X: Single;
+  Y: Single;
+  W: Single;
+  H: Single;
+  FrameIndex: Integer;
+  FS: TFormatSettings;
+  SeenIds: TList<Integer>;
+begin
+  SeenIds := nil;
+  Result := nssIdle;
+
+  try
+
+    Result := nssReading;
+    // without manager we can not change obstacles
+    if not Assigned(AObstacleManager) then
+      Exit(nssInvalid);
+
+    // assets are needed to set the right frame count for each obstacle type
+    if not Assigned(AAssets) then
+      Exit(nssInvalid);
+
+    FS := TFormatSettings.Invariant;
+    DataText := AText;
+
+    // remove the message name
+    // after this only the real obstacle data is left
+    if Pos('obstacles|', DataText) = 1 then
+      Delete(DataText, 1, Length('obstacles|'));
+
+    // if the host sends no obstacle data, the client must also remove all obstacles
+    if Trim(DataText) = '' then
+    begin
+      AObstacleManager.ClearObstacles;
+      Exit(nssEmpty);
+    end;
+
+    // this list remembers which obstacle ids were received from the host
+    // later we remove local obstacles that were not received anymore
+    SeenIds := TList<Integer>.Create;
+
+    // split the full text into obstacle blocks
+    // every block is one obstacle
+    ObstacleParts := DataText.Split([';']);
+
+    for I := 0 to Length(ObstacleParts) - 1 do
+    begin
+      // split one obstacle block into values
+      // expected values:
+      // netid kind x y width height frame
+      Values := ObstacleParts[I].Split([',']);
+
+      // broken obstacle data is skipped
+      if Length(Values) < 7 then
+        Continue;
+
+      NetId := StrToIntDef(Values[0], 0);
+      KindValue := StrToIntDef(Values[1], 0);
+
+      // every obstacle needs a valid network id
+      if NetId <= 0 then
+        Continue;
+
+      // protect enum conversion
+      // without this check, a wrong kind value can crash the game
+      if (KindValue < Ord(Low(TObstacleKind))) or (KindValue > Ord(High(TObstacleKind))) then
+        Continue;
+
+      Kind := TObstacleKind(KindValue);
+
+      // convert text back into numbers
+      // max makes sure width and height can never be lower than 1
+      X := StrToFloatDef(Values[2], 0, FS);
+      Y := StrToFloatDef(Values[3], 0, FS);
+      W := Max(1, StrToFloatDef(Values[4], TGameConfig.OBSTACLE_NORMAL_WIDTH, FS));
+      H := Max(1, StrToFloatDef(Values[5], TGameConfig.OBSTACLE_NORMAL_HEIGHT, FS));
+      FrameIndex := Max(0, StrToIntDef(Values[6], 0));
+
+      // remember that this id exists in the newest host message
+      if SeenIds.IndexOf(NetId) = -1 then
+        SeenIds.Add(NetId);
+
+      O := nil;
+      Found := False;
+
+      // search if this obstacle already exists
+      // if the same netid exists, we update that obstacle
+      // if it does not exist, we create a new obstacle
+      for J := 0 to AObstacleManager.GetObstacles.Count - 1 do
+      begin
+        if AObstacleManager.GetObstacles[J].GetNetId = NetId then
+        begin
+          O := AObstacleManager.GetObstacles[J];
+          Found := True;
+          Break;
+        end;
+      end;
+
+      // create the obstacle only when it was not found
+      if not Found then
+      begin
+        O := AObstacleManager.GetObstacleFromPool;
+        O.SetNetId(NetId);
+
+        // dragon has a different speed than normal obstacles
+        case Kind of
+          okDragon:
+            O.Initialize(
+              TPointF.Create(X, Y),
+              TGameConfig.OBSTACLE_SPEED * TGameConfig.DRAGON_SPEED_MULTIPLIER
+            );
+        else
+          O.Initialize(
+            TPointF.Create(X, Y),
+            TGameConfig.OBSTACLE_SPEED
+          );
+        end;
+
+        AObstacleManager.GetObstacles.Add(O);
+      end;
+
+      // update obstacle data with the newest data from the host
+      O.SetKind(Kind);
+      O.SetSize(W, H);
+      O.SetFrameIndex(FrameIndex);
+
+      // this does not need to teleport the obstacle hard
+      // the obstacle can move smooth toward this target
+      O.SetRemoteTarget(TPointF.Create(X, Y));
+
+      // set the right animation frame count
+      // max prevents invalid frame logic when a frame list is empty
+      case Kind of
+        okPotato:
+          O.SetTotalFrames(Max(1, AAssets.d_potatoFrames.Count));
+
+        okDragon:
+          O.SetTotalFrames(Max(1, AAssets.d_dragonFrames.Count));
+      else
+        O.SetTotalFrames(Max(1, AAssets.d_obstacleFrames.Count));
+      end;
+    end;
+
+    // remove local obstacles that the host did not send anymore
+    // this loop goes backwards because removing items changes the list index
+    for J := AObstacleManager.GetObstacles.Count - 1 downto 0 do
+    begin
+      if not SeenIds.Contains(AObstacleManager.GetObstacles[J].GetNetId) then
+        AObstacleManager.RemoveObstacle(AObstacleManager.GetObstacles[J]);
+    end;
+
+    Result := nssApplied;
+  except
+    on E: Exception do
+    begin
+      Result := nssError;
+      TErrorHandler.ReportError('apply obstacle sync text error: ' + E.Message);
+    end;
+  end;
+
+  SeenIds.Free;
+end;
+
+end.

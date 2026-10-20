@@ -1,0 +1,78 @@
+﻿unit BackgroundLayerUnit;
+
+interface
+
+uses
+  System.Classes, System.SysUtils, System.Types, System.Generics.Collections,
+  FMX.Forms, FMX.Controls, FMX.Objects, FMX.Graphics,
+  PlayerUnit, ObstacleManagerUnit, ObstacleUnit, System.Math, FMX.Utils, FMX.Types;
+
+type
+  TBackgroundLayer = class
+  private
+    d_images: array[0..1] of TImage;
+    d_speedFactor: Single;
+    d_width: Single;
+
+  public
+    constructor Create(AParent: TFmxObject; const ABitmap: TBitmap; ASpeed: Single);
+    procedure Update(const ADeltaTime: Single; PlayerVelocity: Single);
+  end;
+
+implementation
+
+//constructor TBackgroundLayer.Create(AParent: TFmxObject; const ABitmap: TBitmap; ASpeed: Single);
+//var
+//  i: Integer;
+//begin
+//  d_speedFactor := ASpeed;
+//
+//  for i := 0 to 1 do
+//  begin
+//    d_images[i] := TImage.Create(AParent);
+//    d_images[i].Parent := AParent;
+//    d_images[i].Bitmap.Assign(ABitmap);
+//    d_images[i].Position.X := i * d_images[i].Width;
+//  end;
+//
+//  d_width := d_images[0].Width;
+//end;
+
+constructor TBackgroundLayer.Create(AParent: TFmxObject; const ABitmap: TBitmap; ASpeed: Single);
+var
+  i: Integer;
+begin
+  d_speedFactor := ASpeed;
+
+  for i := 0 to 1 do
+  begin
+    d_images[i] := TImage.Create(AParent);
+    d_images[i].Parent := AParent;
+    d_images[i].Bitmap.Assign(ABitmap);
+    d_images[i].Width := ABitmap.Width;
+    d_images[i].Height := ABitmap.Height;
+    d_images[i].Position.X := i * d_images[i].Width;
+  end;
+
+  d_width := d_images[0].Width;
+end;
+
+procedure TBackgroundLayer.Update(const ADeltaTime: Single; PlayerVelocity: Single);
+var
+  i: Integer;
+  move: Single;
+begin
+  // parallax speed based on player movement
+  move := PlayerVelocity * d_speedFactor * ADeltaTime;
+
+  for i := 0 to 1 do
+  begin
+    d_images[i].Position.X := d_images[i].Position.X - move;
+
+    // loop background
+    if d_images[i].Position.X <= -d_width then
+      d_images[i].Position.X := d_images[i].Position.X + d_width * 2;
+  end;
+end;
+
+end.

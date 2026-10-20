@@ -1,0 +1,435 @@
+unit GameRendererUnit;
+
+interface
+
+uses
+  System.Classes, System.SysUtils, System.Types, System.Generics.Collections,
+  System.Math, FMX.Types, FMX.Forms, FMX.Controls, FMX.Objects, FMX.Graphics,
+  PlayerUnit, ObstacleUnit, ObstacleManagerUnit, BackgroundLayerUnit,
+  AssetManagerUnit, GameConfigUnit, ErrorHandlerUnit,
+  RemotePlayerRendererUnit, DemonManagerUnit;
+
+type
+  TGameRenderer = class
+  private
+    d_form: TForm;
+    d_parent: TControl;
+
+    d_imgPlayer: TImage;
+    d_imgObstacleTemplate: TImage;
+
+    d_obstacleImages: TObjectList<TImage>;
+
+    d_assets: TAssetManager;
+    d_obstacleManager: TObstacleManager;
+    d_remotePlayerRenderer: TRemotePlayerRenderer;
+    d_demon: TDemonManager;
+
+    d_playerNormalW: Single;
+    d_playerNormalH: Single;
+    d_playerJetpackW: Single;
+    d_playerJetpackH: Single;
+
+    d_lastPlayerFrame: Integer;
+    d_lastPlayerState: TPlayerState;
+    d_lastJetpackUpFrame: Integer;
+    d_lastJetpackFlyFrame: Integer;
+
+    procedure SetImageBitmapIfChanged(AImage: TImage; ABitmap: TBitmap; var ALastFrame: Integer; ANewFrame: Integer);
+    function GetPlayerYOffset(const APlayer: TPlayer): Single;
+  public
+    constructor Create;
+    destructor Destroy; override;
+    procedure Initialize(const AForm: TForm;const AAssets: TAssetManager;const AObstacleManager: TObstacleManager;const ARemotePlayerRenderer: TRemotePlayerRenderer;const ADemon: TDemonManager);
+    procedure ApplyLayerOrder(const ABackgrounds: TObjectList<TBackgroundLayer>);
+    procedure Render(const APlayer: TPlayer; const ACameraX: Single);
+    function GetPlayerImage: TImage;
+    function GetObstacleTemplateImage: TImage;
+    function GetParent: TControl;
+  end;
+
+implementation
+
+constructor TGameRenderer.Create;
+begin
+  inherited;
+
+  d_form := nil;
+  d_parent := nil;
+  d_imgPlayer := nil;
+  d_imgObstacleTemplate := nil;
+
+  d_assets := nil;
+  d_obstacleManager := nil;
+  d_remotePlayerRenderer := nil;
+  d_demon := nil;
+
+  d_playerNormalW := TGameConfig.PLAYER_NORMAL_WIDTH;
+  d_playerNormalH := TGameConfig.PLAYER_NORMAL_HEIGHT;
+  d_playerJetpackW := TGameConfig.PLAYER_JETPACK_WIDTH;
+  d_playerJetpackH := TGameConfig.PLAYER_JETPACK_HEIGHT;
+
+  d_lastPlayerFrame := -1;
+  d_lastPlayerState := psIdle;
+  d_lastJetpackUpFrame := -1;
+  d_lastJetpackFlyFrame := -1;
+
+  d_obstacleImages := TObjectList<TImage>.Create(True);
+end;
+
+destructor TGameRenderer.Destroy;
+begin
+  FreeAndNil(d_obstacleImages);
+  inherited;
+end;
+
+procedure TGameRenderer.Initialize(
+  const AForm: TForm;
+  const AAssets: TAssetManager;
+  const AObstacleManager: TObstacleManager;
+  const ARemotePlayerRenderer: TRemotePlayerRenderer;
+  const ADemon: TDemonManager
+);
+var
+  GameContainer: TComponent;
+begin
+  try
+    if not Assigned(AForm) then
+      raise Exception.Create('game form is not assigned');
+
+    if not Assigned(AAssets) then
+      raise Exception.Create('assets are not assigned');
+
+    if not Assigned(AObstacleManager) then
+      raise Exception.Create('obstacle manager is not assigned');
+
+    d_form := AForm;
+    d_assets := AAssets;
+    d_obstacleManager := AObstacleManager;
+    d_remotePlayerRenderer := ARemotePlayerRenderer;
+    d_demon := ADemon;
+
+    GameContainer := d_form.FindComponent('layGameContainer');
+
+    if not Assigned(GameContainer) then
+      raise Exception.Create('laygamecontainer was not found');
+
+    d_imgPlayer := GameContainer.FindComponent('imgPlayer') as TImage;
+
+    if not Assigned(d_imgPlayer) then
+      raise Exception.Create('imgplayer was not found');
+
+    d_imgObstacleTemplate := GameContainer.FindComponent('imgObstacle1') as TImage;
+
+    if not Assigned(d_imgObstacleTemplate) then
+      raise Exception.Create('imgobstacle1 was not found');
+
+    if not Assigned(d_imgPlayer.Parent) then
+      raise Exception.Create('imgplayer parent was not found');
+
+    d_parent := d_imgPlayer.Parent as TControl;
+
+    d_imgPlayer.Width := d_playerNormalW;
+    d_imgPlayer.Height := d_playerNormalH;
+    d_imgPlayer.HitTest := False;
+    d_imgPlayer.WrapMode := TImageWrapMode.Fit;
+    d_imgPlayer.RotationCenter.X := 0.5;
+    d_imgPlayer.RotationCenter.Y := 0.5;
+
+    d_imgObstacleTemplate.Width := TGameConfig.OBSTACLE_NORMAL_WIDTH;
+    d_imgObstacleTemplate.Height := TGameConfig.OBSTACLE_NORMAL_HEIGHT;
+    d_imgObstacleTemplate.HitTest := False;
+
+    if Assigned(d_remotePlayerRenderer) then
+      d_remotePlayerRenderer.Initialize(
+        d_form,
+        d_parent,
+        d_imgPlayer,
+        d_assets
+      );
+
+    if Assigned(d_demon) then
+      d_demon.Initialize(d_parent, d_assets);
+  except
+    on E: Exception do
+      TErrorHandler.ReportError('game renderer initialize error: ' + E.Message);
+  end;
+end;
+
+function TGameRenderer.GetPlayerYOffset(const APlayer: TPlayer): Single;
+begin
+  Result := 0;
+
+  if not Assigned(d_assets) then
+    Exit;
+
+  if d_assets.d_theme = gtMythicJapanese then
+  begin
+    if APlayer.GetIsInAir then
+      Result := TGameConfig.JAPANESE_JUMP_Y_OFFSET
+    else
+      Result := TGameConfig.JAPANESE_PLAYER_Y_OFFSET;
+
+    Exit;
+  end;
+
+  if d_assets.d_theme = gtFakeMoonlanding then
+  begin
+    if APlayer.GetIsInAir then
+      Result := TGameConfig.MOON_JUMP_Y_OFFSET
+    else if APlayer.CurrentState = psRunning then
+      Result := TGameConfig.MOON_RUN_Y_OFFSET
+    else
+      Result := TGameConfig.MOON_ALIEN_Y_OFFSET;
+  end;
+end;
+
+procedure TGameRenderer.ApplyLayerOrder(const ABackgrounds: TObjectList<TBackgroundLayer>);
+var
+  Img: TImage;
+  I: Integer;
+  FrontIndex: Integer;
+begin
+  try
+    if not Assigned(ABackgrounds) then
+      Exit;
+
+    if ABackgrounds.Count < 3 then
+      Exit;
+
+    FrontIndex := ABackgrounds.Count - 1;
+    ABackgrounds[0].SendToBack;
+
+    for I := 1 to FrontIndex - 1 do
+      ABackgrounds[I].BringToFront;
+    if Assigned(d_demon) and Assigned(d_demon.d_imgDemon) then
+      d_demon.d_imgDemon.BringToFront;
+    ABackgrounds[FrontIndex].BringToFront;
+    for Img in d_obstacleImages do
+      Img.BringToFront;
+    if Assigned(d_remotePlayerRenderer) then
+      d_remotePlayerRenderer.BringToFront;
+    if Assigned(d_imgPlayer) then
+      d_imgPlayer.BringToFront;
+    if Assigned(d_imgObstacleTemplate) then
+      d_imgObstacleTemplate.BringToFront;
+  except
+    on E: Exception do
+      TErrorHandler.ReportError('apply layer order error: ' + E.Message);
+  end;
+end;
+
+procedure TGameRenderer.Render(
+  const APlayer: TPlayer;
+  const ACameraX: Single
+);
+var
+  FrameIndex: Integer;
+  PlayerPos: TPointF;
+  Obstacle: TObstacle;
+  Img: TImage;
+  I: Integer;
+  Angle: Single;
+  ObstacleBitmap: TBitmap;
+begin
+  try
+    if not Assigned(d_imgPlayer) then
+      Exit;
+
+    if not Assigned(APlayer) then
+      Exit;
+
+    if not Assigned(d_obstacleManager) then
+      Exit;
+
+    if not Assigned(d_assets) then
+      Exit;
+
+    PlayerPos := APlayer.GetPosition;
+
+    if d_lastPlayerState <> APlayer.CurrentState then
+    begin
+      d_lastPlayerState := APlayer.CurrentState;
+      d_lastPlayerFrame := -1;
+      d_lastJetpackUpFrame := -1;
+      d_lastJetpackFlyFrame := -1;
+    end;
+
+    if APlayer.CurrentState in [psJetpackUp, psJetpackFlying] then
+    begin
+      d_imgPlayer.Width := d_playerJetpackW;
+      d_imgPlayer.Height := d_playerJetpackH;
+    end
+    else
+    begin
+      d_imgPlayer.Width := d_playerNormalW;
+      d_imgPlayer.Height := d_playerNormalH;
+    end;
+
+    if APlayer.CurrentState in [psJetpackUp, psJetpackFlying] then
+    begin
+      d_imgPlayer.Scale.X := 1;
+      d_imgPlayer.Position.X := PlayerPos.X - ((d_imgPlayer.Width - d_playerNormalW) / 2);
+    end
+    else if APlayer.GetFacingRight then
+    begin
+      d_imgPlayer.Scale.X := 1;
+      d_imgPlayer.Position.X := PlayerPos.X - ((d_imgPlayer.Width - d_playerNormalW) / 2);
+    end
+    else
+    begin
+      d_imgPlayer.Scale.X := -1;
+      d_imgPlayer.Position.X := PlayerPos.X + d_playerNormalW + ((d_imgPlayer.Width - d_playerNormalW) / 2);
+    end;
+
+    d_imgPlayer.Position.Y := PlayerPos.Y - (d_imgPlayer.Height - d_playerNormalH) + GetPlayerYOffset(APlayer);
+
+    if APlayer.CurrentState = psJetpackUp then
+    begin
+      d_imgPlayer.RotationAngle := 0;
+
+      if d_assets.d_jetpackUpFrames.Count > 0 then
+      begin
+        FrameIndex := Trunc(APlayer.GetJetpackTimer * 10) mod d_assets.d_jetpackUpFrames.Count;
+        SetImageBitmapIfChanged(d_imgPlayer, d_assets.d_jetpackUpFrames[FrameIndex], d_lastJetpackUpFrame, FrameIndex);
+      end;
+    end
+    else if APlayer.CurrentState = psJetpackFlying then
+    begin
+      d_imgPlayer.RotationAngle := 0;
+
+      if d_assets.d_jetpackFlyFrames.Count > 0 then
+      begin
+        FrameIndex := Trunc(APlayer.GetJetpackTimer * 10) mod d_assets.d_jetpackFlyFrames.Count;
+        SetImageBitmapIfChanged(d_imgPlayer, d_assets.d_jetpackFlyFrames[FrameIndex], d_lastJetpackFlyFrame, FrameIndex);
+      end;
+    end
+    else if APlayer.GetIsInAir then
+    begin
+      if d_assets.d_theme = gtFakeMoonlanding then
+      begin
+        d_imgPlayer.RotationAngle := 0;
+
+        if d_assets.d_playerJumpFrames.Count > 0 then
+        begin
+          FrameIndex := Trunc(APlayer.GetAirTime * 10) mod d_assets.d_playerJumpFrames.Count;
+          SetImageBitmapIfChanged(d_imgPlayer, d_assets.d_playerJumpFrames[FrameIndex], d_lastPlayerFrame, FrameIndex);
+        end;
+      end
+      else
+      begin
+        if not d_assets.d_jumpSprite.IsEmpty then
+          d_imgPlayer.Bitmap.Assign(d_assets.d_jumpSprite);
+
+        Angle := 360 * (APlayer.GetAirTime / TGameConfig.PLAYER_JUMP_ROTATION_TIME);
+        d_imgPlayer.RotationAngle := Angle;
+      end;
+    end
+    else
+    begin
+      d_imgPlayer.RotationAngle := 0;
+
+      if APlayer.CurrentState = psRunning then
+      begin
+        FrameIndex := APlayer.GetCurrentSpriteIndex;
+
+        if (FrameIndex >= 0) and (FrameIndex < d_assets.d_playerFrames.Count) then
+          SetImageBitmapIfChanged(d_imgPlayer, d_assets.d_playerFrames[FrameIndex], d_lastPlayerFrame, FrameIndex);
+      end
+      else
+      begin
+        if (d_assets.d_theme = gtFakeMoonlanding) and (d_assets.d_alienFrames.Count > 0) then
+        begin
+          FrameIndex := Trunc(APlayer.GetAirTime * 4) mod d_assets.d_alienFrames.Count;
+          SetImageBitmapIfChanged(d_imgPlayer, d_assets.d_alienFrames[FrameIndex], d_lastPlayerFrame, FrameIndex);
+        end
+        else if d_assets.d_playerFrames.Count > 0 then
+          d_imgPlayer.Bitmap.Assign(d_assets.d_playerFrames[0]);
+      end;
+    end;
+
+    if Assigned(d_demon) then
+      d_demon.Render;
+
+    while d_obstacleImages.Count < d_obstacleManager.GetObstacles.Count do
+    begin
+      Img := TImage.Create(d_form);
+      Img.Parent := d_parent;
+      Img.Width := TGameConfig.OBSTACLE_NORMAL_WIDTH;
+      Img.Height := TGameConfig.OBSTACLE_NORMAL_HEIGHT;
+      Img.WrapMode := TImageWrapMode.Fit;
+      Img.HitTest := False;
+      Img.BringToFront;
+      d_obstacleImages.Add(Img);
+    end;
+
+    for I := 0 to d_obstacleManager.GetObstacles.Count - 1 do
+    begin
+      Obstacle := d_obstacleManager.GetObstacles[I];
+      Img := d_obstacleImages[I];
+
+      if not Assigned(Obstacle) then
+        Continue;
+
+      Img.Visible := True;
+      Img.Width := Obstacle.GetSize.Width;
+      Img.Height := Obstacle.GetSize.Height;
+
+      ObstacleBitmap := d_assets.GetObstacleBitmap(Obstacle.GetKind, Obstacle.GetFrameIndex);
+
+      if Assigned(ObstacleBitmap) then
+      begin
+        Img.Visible := True;
+        Img.Bitmap.Assign(ObstacleBitmap);
+      end
+      else
+      begin
+        Img.Visible := False;
+        Continue;
+      end;
+
+      Img.Position.X := Obstacle.GetPosition.X - ACameraX;
+      Img.Position.Y := Obstacle.GetPosition.Y;
+    end;
+
+    for I := d_obstacleManager.GetObstacles.Count to d_obstacleImages.Count - 1 do
+      d_obstacleImages[I].Visible := False;
+  except
+    on E: Exception do
+      TErrorHandler.ReportError('game render error: ' + E.Message);
+  end;
+end;
+
+procedure TGameRenderer.SetImageBitmapIfChanged(AImage: TImage; ABitmap: TBitmap; var ALastFrame: Integer; ANewFrame: Integer);
+begin
+  try
+    if not Assigned(AImage) or not Assigned(ABitmap) then
+      Exit;
+
+    if ALastFrame = ANewFrame then
+      Exit;
+
+    AImage.Bitmap.Assign(ABitmap);
+    ALastFrame := ANewFrame;
+  except
+    on E: Exception do
+      TErrorHandler.ReportError('set image bitmap if changed error: ' + E.Message);
+  end;
+end;
+
+function TGameRenderer.GetPlayerImage: TImage;
+begin
+  Result := d_imgPlayer;
+end;
+
+function TGameRenderer.GetObstacleTemplateImage: TImage;
+begin
+  Result := d_imgObstacleTemplate;
+end;
+
+function TGameRenderer.GetParent: TControl;
+begin
+  Result := d_parent;
+end;
+
+end.

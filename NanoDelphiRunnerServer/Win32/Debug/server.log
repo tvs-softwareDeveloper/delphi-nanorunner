@@ -1,0 +1,13 @@
+2026-05-08 16:08:02  starting adventure runner server
+2026-05-08 16:08:02  server running on port 7777
+2026-05-08 16:08:02  commands: status, stop
+2026-05-08 16:08:26  unknown command: start
+2026-05-08 16:36:38  starting adventure runner server
+2026-05-08 16:36:38  server running on port 7777
+2026-05-08 16:36:38  commands: status, stop
+2026-05-08 16:54:21  starting adventure runner server
+2026-05-08 16:54:21  server could not start
+2026-05-08 16:54:21  port may already be used: 7777
+2026-06-04 14:10:29  starting adventure runner server
+2026-06-04 14:10:29  server running on port 7777
+2026-06-04 14:10:29  commands: status, stop

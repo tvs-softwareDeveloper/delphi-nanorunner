@@ -1,0 +1,758 @@
+﻿unit GameEngine;
+
+interface
+
+uses
+  System.Classes, System.SysUtils, System.Types, System.Generics.Collections, System.UITypes,
+  FMX.Types, FMX.Forms, FMX.Controls, FMX.Objects, FMX.Graphics, FMX.StdCtrls,
+  PlayerUnit, ObstacleManagerUnit, ObstacleUnit, System.Math, FMX.Utils,
+  BackgroundLayerUnit, ErrorHandlerUnit, GameConfigUnit, AssetManagerUnit, RemotePlayerRendererUnit, GameNetworkSyncUnit, MoonTreeManagerUnit,DemonManagerUnit, GameRendererUnit, BackgroundManagerUnit;
+
+type
+
+  TGameEngine = class
+  private
+    d_form: TForm;
+    d_player: TPlayer;
+    d_obstacleManager: TObstacleManager;
+    d_isRunning: Boolean;
+    d_survivalTime: Single;
+    d_distanceMeters: Single;
+    d_pixelsPerMeter: Single;
+    d_gameOver: Boolean;
+    d_lastFrontPlayerWorldX: Single;
+    d_obstacleSpawnWorldX: Single;
+    d_scoreUpdateTimer: Single;
+    d_imgPlayer: TImage;
+    d_imgObstacleTemplate: TImage;
+    d_moonTreeManager: TMoonTreeManager;
+    d_backgroundManager: TBackgroundManager;
+    d_player_x: Single;
+    d_player_y: Single;
+    d_obstacle_x: Single;
+    d_obstacle_y: Single;
+    d_onScoreUpdate: TProc<Single>;
+    d_onGameOver: TProc;
+    d_worldScrollX: Single;
+    d_playerNormalW: Single;
+    d_playerNormalH: Single;
+    d_playerJetpackW: Single;
+    d_playerJetpackH: Single;
+    d_restartProtectionTimer: Single;
+    d_remotePlayerRenderer: TRemotePlayerRenderer;
+    d_collisionEnabled: Boolean;
+    d_isHostMode: Boolean;
+    d_cameraX: Single;
+    d_worldPlayerX: Single;
+    d_lastPlayerFrame: Integer;
+    d_speedBoostTimer: Single;
+    d_assets: TAssetManager;
+    d_demon: TDemonManager;
+    d_lastPlayerState: TPlayerState;
+    d_renderer: TGameRenderer;
+
+    procedure ApplyLayerOrder;
+    function GetFrontPlayerSpeed(const ADeltaTime: Single): Single;
+    function GetSafeSpawnBaseX(const AParentWidth: Single): Single;
+
+  public
+    constructor Create;
+    destructor Destroy; override;
+    procedure Initialize(AForm: TForm);
+    procedure SetTheme(const ATheme: TGameTheme);
+    procedure Update(const ADeltaTime: Single; const MoveLeft, MoveRight, MoveUp, MoveDown: Boolean);
+    procedure Render;
+    procedure StartGame;
+    procedure StopGame;
+    procedure GameOver;
+    procedure RestartGame(const AResetObstacles: Boolean);
+    procedure HandleJump;
+    procedure SetCanvasSize(const aWidth, aHeight: Single);
+    procedure SetOnScoreUpdate(const ACallback: TProc<Single>);
+    procedure SetOnGameOver(const ACallback: TProc);
+    procedure UpdateRemotePlayer(const AName: string; const AX, AY: Single; const AState, AFrame: Integer; const AFacingRight: Boolean; const AAirTime: Single);
+    function GetPlayerSyncText(const APlayerName: string): string;
+    procedure SetCollisionEnabled(const AValue: Boolean);
+    procedure SetHostMode(const AValue: Boolean);
+    function GetObstacleSyncText: string;
+    function GetLastPlayerWorldX : Single;
+    function GetFrontPlayerWorldX: Single;
+    procedure ApplyObstacleSyncText(const AText: string);     procedure StartGameWithOptions(const AResetObstacles: Boolean);
+
+  end;
+
+implementation
+
+procedure TGameEngine.SetTheme(const ATheme: TGameTheme);
+begin
+  if not Assigned(d_assets) then
+    Exit;
+
+  d_assets.SetTheme(ATheme);
+
+  if Assigned(d_form) then
+  begin
+    d_assets.LoadThemeAssets;
+
+    if ATheme = gtFakeMoonlanding then
+      d_player.SetRunAnimSpeed(TGameConfig.PLAYER_RUN_ANIM_SPEED_MOON)
+    else
+      d_player.SetRunAnimSpeed(TGameConfig.PLAYER_RUN_ANIM_SPEED);
+
+
+    d_obstacleManager.SetPotatoTotalFrames(Max(1, d_assets.PotatoFrames.Count));
+    d_obstacleManager.SetDragonTotalFrames(Max(1, d_assets.DragonFrames.Count));
+    //d_obstacleManager.SetTotalFrames(Max(1, d_assets.ObstacleFrames.Count));
+    d_obstacleManager.SetTotalFrames(d_assets.GetObstacleFrameCount);
+
+    if Assigned(d_backgroundManager) then
+      d_backgroundManager.Rebuild;
+
+    if Assigned(d_imgPlayer) and Assigned(d_imgPlayer.Parent) then
+      SetCanvasSize((d_imgPlayer.Parent as TControl).Width, (d_imgPlayer.Parent as TControl).Height);
+
+    ApplyLayerOrder;
+
+
+  end;
+end;
+
+procedure TGameEngine.StartGameWithOptions(const AResetObstacles: Boolean);
+begin
+  if not Assigned(d_player) or not Assigned(d_obstacleManager) then
+    Exit;
+
+  d_isRunning := True;
+  d_gameOver := False;
+  d_survivalTime := 0;
+  d_distanceMeters := 0;
+  d_worldScrollX := 0;
+
+  d_player.SetPosition(TPointF.Create(d_player_x, d_player_y));
+  d_player.SetGroundY(d_player_y);
+  d_player.ChangeState(psIdle);
+
+
+  d_demon.ChangeDemonState(dsHidden);
+
+  d_cameraX := 0;
+  d_worldPlayerX := d_player_x;
+  d_lastFrontPlayerWorldX := d_worldPlayerX;
+
+  if AResetObstacles then
+    d_obstacleSpawnWorldX := d_worldPlayerX;
+
+  if Assigned(d_backgroundManager) then
+    d_backgroundManager.ResetPosition;
+
+  if AResetObstacles then
+    d_obstacleManager.Reset;
+
+end;
+
+constructor TGameEngine.Create;
+begin
+  inherited;
+  // score and distance values
+  d_distanceMeters := 0;
+  d_pixelsPerMeter := TGameConfig.PIXELS_PER_METER;
+
+  // create main game objects
+  d_player := TPlayer.Create;
+  d_obstacleManager := TObstacleManager.Create;
+  d_assets := TAssetManager.Create;
+  d_backgroundManager := TBackgroundManager.Create;
+  d_demon := TDemonManager.Create;
+
+  d_isRunning := False;
+  d_gameOver := False;
+  d_survivalTime := 0;
+  d_worldScrollX := 0;
+
+  // player draw sizes
+  d_playerNormalW := TGameConfig.PLAYER_NORMAL_WIDTH;
+  d_playerNormalH := TGameConfig.PLAYER_NORMAL_HEIGHT;
+  d_playerJetpackW := TGameConfig.PLAYER_JETPACK_WIDTH;
+  d_playerJetpackH := TGameConfig.PLAYER_JETPACK_HEIGHT;
+
+  d_remotePlayerRenderer := TRemotePlayerRenderer.Create;
+  d_collisionEnabled := True;
+  d_isHostMode := True;
+  d_restartProtectionTimer := 0;
+  d_cameraX := 0;
+  d_worldPlayerX := 0;
+
+  d_lastFrontPlayerWorldX := 0;
+  d_obstacleSpawnWorldX := 0;
+
+  // for reuse
+  d_lastPlayerFrame := -1;
+  d_lastPlayerState := psIdle;
+  d_renderer := TGameRenderer.Create;
+
+  d_moonTreeManager := TMoonTreeManager.Create;
+end;
+
+destructor TGameEngine.Destroy;
+begin
+  FreeAndNil(d_player);
+  FreeAndNil(d_obstacleManager);
+  FreeAndNil(d_renderer);
+  FreeAndNil(d_backgroundManager);
+  FreeAndNil(d_assets);
+  FreeAndNil(d_remotePlayerRenderer);
+  FreeAndNil(d_demon);
+  FreeAndNil(d_moonTreeManager);
+  inherited;
+end;
+
+procedure TGameEngine.ApplyLayerOrder;
+var
+  Backgrounds: TObjectList<TBackgroundLayer>;
+begin
+  if Assigned(d_renderer) and Assigned(d_backgroundManager) then
+    d_renderer.ApplyLayerOrder(d_backgroundManager.GetBackgrounds);
+
+  if not Assigned(d_backgroundManager) then
+    Exit;
+
+  Backgrounds := d_backgroundManager.GetBackgrounds;
+
+  if d_assets.d_theme = gtFakeMoonlanding then
+  begin
+    if Assigned(d_moonTreeManager) then
+      d_moonTreeManager.BringToFront;
+
+    // front background boven trees en obstacles
+    if Backgrounds.Count > 0 then
+      Backgrounds[Backgrounds.Count - 1].BringToFront;
+  end;
+
+  // player altijd helemaal vooraan
+  if Assigned(d_imgPlayer) then
+    d_imgPlayer.BringToFront;
+end;
+
+procedure TGameEngine.SetCanvasSize(const aWidth: Single; const aHeight: Single);
+var
+  playerH, obstacleH: Single;
+  bg: TBackgroundLayer;
+begin
+  if (aWidth <= 0) or (aHeight <= 0) then
+    Exit;
+
+  if Assigned(d_imgPlayer) then
+    playerH := d_imgPlayer.Height
+  else
+    playerH := 64;
+
+  if Assigned(d_imgObstacleTemplate) then
+    obstacleH := d_imgObstacleTemplate.Height
+  else
+    obstacleH := 64;
+
+  // player starts on the left side of the screen
+  d_player_x := TGameConfig.PLAYER_START_X;
+
+  // y position is screen height minus player height
+  // this places the bottom of the player on the ground
+  d_player_y := aHeight - playerH;
+
+  // obstacles spawn a bit outside the right side
+  // this makes them move into view instead of suddenly appearing
+  d_obstacle_x := aWidth + 40;
+  d_obstacle_y := aHeight - obstacleH;
+
+  if Assigned(d_obstacleManager) then
+    d_obstacleManager.SetDragonSpawnYRange(TGameConfig.DRAGON_SPAWN_MIN_Y, aHeight * 0.55);
+
+  if Assigned(d_player) then
+  begin
+    d_player.SetPosition(TPointF.Create(d_player_x, d_player_y));
+    d_player.SetGroundY(d_player_y);
+  end;
+
+  if Assigned(d_backgroundManager) then
+    d_backgroundManager.Resize(aWidth, aHeight);
+end;
+
+procedure TGameEngine.Initialize(AForm: TForm);
+begin
+  if not Assigned(AForm) then
+    raise Exception.Create('game form is not assigned');
+
+  d_form := AForm;
+
+  d_assets.LoadThemeAssets;
+
+  d_obstacleManager.SetPotatoTotalFrames(d_assets.GetPotatoFrameCount);
+  d_obstacleManager.SetDragonTotalFrames(d_assets.GetDragonFrameCount);
+  d_obstacleManager.SetTotalFrames(d_assets.GetObstacleFrameCount);
+
+  if Assigned(d_renderer) then
+  begin
+    d_renderer.Initialize(d_form, d_assets, d_obstacleManager, d_remotePlayerRenderer, d_demon);
+    d_imgPlayer := d_renderer.GetPlayerImage;
+    d_imgObstacleTemplate := d_renderer.GetObstacleTemplateImage;
+  end;
+
+
+     //d_moonTreeManager.Initialize(AParent, d_assets);
+    d_moonTreeManager.Initialize(d_imgPlayer.Parent as TControl, d_assets);
+
+  if not Assigned(d_imgPlayer) then
+    raise Exception.Create('imgplayer was not found');
+
+  if not Assigned(d_imgObstacleTemplate) then
+    raise Exception.Create('imgobstacle1 was not found');
+
+  Randomize;
+
+  d_obstacleManager.SetSpeed(TGameConfig.OBSTACLE_SPEED);
+
+  if Assigned(d_obstacleManager) then
+    d_obstacleManager.Initialize;
+
+  if Assigned(d_backgroundManager) then
+    d_backgroundManager.Initialize(d_imgPlayer.Parent as TControl, d_assets);
+
+  ApplyLayerOrder;
+end;
+
+procedure TGameEngine.StartGame;
+begin
+  StartGameWithOptions(True);
+  ApplyLayerOrder;
+end;
+
+procedure TGameEngine.StopGame;
+begin
+  d_isRunning := False;
+  if Assigned(d_moonTreeManager) then
+    d_moonTreeManager.Reset;
+end;
+
+procedure TGameEngine.GameOver;
+begin
+  if d_gameOver then
+    Exit;
+
+  // keep the game loop alive for multiplayer sync
+  d_gameOver := True;
+  d_player.ChangeState(psDead);
+
+  if Assigned(d_player) then
+    d_player.StopSpeedBoost;
+
+  if Assigned(d_onGameOver) then
+    d_onGameOver;
+end;
+
+procedure TGameEngine.RestartGame(const AResetObstacles: Boolean);
+begin
+  StartGameWithOptions(AResetObstacles);
+
+  if Assigned(d_moonTreeManager) then
+    d_moonTreeManager.Reset;
+
+  if not AResetObstacles then
+    d_restartProtectionTimer := TGameConfig.RESTART_PROTECTION_TIME;
+
+  ApplyLayerOrder;
+end;
+
+procedure TGameEngine.HandleJump;
+begin
+  if d_isRunning and not d_gameOver and Assigned(d_player) then
+    d_player.Jump;
+end;
+
+procedure TGameEngine.Update(const ADeltaTime: Single; const MoveLeft, MoveRight, MoveUp, MoveDown: Boolean);
+var
+  playerPos: TPointF;
+  mid: Single;
+  scrollVelocity: Single;
+  hitObstacle: TObstacle;
+  targetY: Single;
+  parentControl: TControl;
+  spawnBaseX: Single;
+begin
+  try
+    // bad delta time can break movement math, so ignore it
+    if ADeltaTime <= 0 then
+      Exit;
+
+    if not d_isRunning then
+      Exit;
+
+    if not Assigned(d_player) or not Assigned(d_obstacleManager) then
+      Exit;
+
+    if not Assigned(d_imgPlayer) or not Assigned(d_imgPlayer.Parent) then
+      Exit;
+
+    parentControl := d_imgPlayer.Parent as TControl;
+    scrollVelocity := 0;
+
+    // if game over, keep obstacle sync alive for multiplayer
+    if d_gameOver then
+    begin
+      d_worldPlayerX := d_cameraX + d_player.GetPosition.X;
+
+      if d_isHostMode then
+      begin
+        spawnBaseX := GetSafeSpawnBaseX(parentControl.Width);
+
+        d_obstacleManager.SetSpawnPosition(
+          TPointF.Create(spawnBaseX, d_obstacle_y)
+        );
+
+        d_obstacleManager.Update(
+          ADeltaTime,
+          d_player,
+          True,
+          GetFrontPlayerSpeed(ADeltaTime),
+          d_assets.d_theme = gtMythicJapanese
+        );
+
+        d_obstacleManager.RemoveObstaclesLeftOf(GetLastPlayerWorldX - TGameConfig.REMOVE_OBSTACLE_MARGIN);
+      end
+      else
+        d_obstacleManager.UpdateRemoteOnly(ADeltaTime);
+
+      Exit;
+    end;
+
+    d_player.Update(ADeltaTime, MoveLeft, MoveRight, MoveUp, MoveDown);
+
+    playerPos := d_player.GetPosition;
+
+    // middle of the screen
+    // width divided by 2 gives the center x position
+    mid := parentControl.Width / 2;
+
+    // distance score
+    // velocity is pixels per second
+    // velocity times delta time gives pixels moved this frame
+    // divide by pixels per meter to change pixels into meters
+    d_distanceMeters := d_distanceMeters + (Abs(d_player.GetVelocityX) * ADeltaTime / d_pixelsPerMeter);
+
+    // start demon event at 50 meters and then every 100 meters
+    if (d_demon.d_demonState = dsHidden) and (d_distanceMeters >= d_demon.d_nextDemonMeter) then
+      d_demon.StartDemonEvent(parentControl);
+
+    d_demon.UpdateDemon(ADeltaTime, parentControl);
+
+    // camera scroll logic
+    // player stays near the middle while the camera moves through the world
+    if (playerPos.X > mid) and (d_player.GetVelocityX > 0) then
+    begin
+      playerPos.X := mid;
+      d_player.SetPosition(playerPos);
+
+      // world moves with player speed
+      scrollVelocity := d_player.GetVelocityX;
+    end
+    else if (playerPos.X < d_player_x) and (d_player.GetVelocityX < 0) and (d_cameraX > 0) then
+    begin
+      playerPos.X := d_player_x;
+      d_player.SetPosition(playerPos);
+
+      // negative speed moves camera back left
+      scrollVelocity := d_player.GetVelocityX;
+    end
+    else if playerPos.X < d_player_x then
+    begin
+      playerPos.X := d_player_x;
+      d_player.SetPosition(playerPos);
+
+      // camera can not move more left
+      scrollVelocity := 0;
+    end;
+
+    // move camera
+    // speed times delta time gives how many pixels camera moves this frame
+    d_cameraX := d_cameraX + (scrollVelocity * ADeltaTime);
+
+    // do not allow camera to go before start of world
+    if d_cameraX < 0 then
+    begin
+      d_cameraX := 0;
+      scrollVelocity := 0;
+    end;
+
+    // world player x is real position in the world
+    // camera x is how far the world has scrolled
+    // player screen x is where player is drawn
+    d_worldPlayerX := d_cameraX + d_player.GetPosition.X;
+
+    if Assigned(d_backgroundManager) then
+      d_backgroundManager.Update(ADeltaTime, scrollVelocity);
+
+
+    if d_assets.d_theme = gtFakeMoonlanding then
+    begin
+      d_moonTreeManager.Update(
+        d_cameraX,
+        parentControl.Width
+      );
+      ApplyLayerOrder;
+    end;
+
+    // obstacle spawn x is in world space
+    // camera x plus screen spawn x means obstacle spawns ahead in the world
+
+    if d_isHostMode then
+    begin
+      spawnBaseX := GetSafeSpawnBaseX(parentControl.Width);
+
+      d_obstacleManager.SetSpawnPosition(
+        TPointF.Create(spawnBaseX, d_obstacle_y)
+      );
+
+      d_obstacleManager.SetDifficultyByMeters(d_distanceMeters);
+      d_obstacleManager.Update(
+        ADeltaTime,
+        d_player,
+        d_player.CurrentState = psJetpackFlying,
+        GetFrontPlayerSpeed(ADeltaTime),
+        d_assets.d_theme = gtMythicJapanese
+      );
+
+      if Assigned(d_remotePlayerRenderer) and d_remotePlayerRenderer.HasRemotePlayers then
+      begin
+        d_obstacleManager.EnsureObstacleNearPlayer(
+          GetLastPlayerWorldX,
+          parentControl.Width,
+          d_obstacle_y
+        );
+      end;
+
+
+      d_obstacleManager.RemoveObstaclesLeftOf(GetLastPlayerWorldX - TGameConfig.REMOVE_OBSTACLE_MARGIN);
+    end
+    else
+      d_obstacleManager.UpdateRemoteOnly(ADeltaTime);
+
+    // update timer for restart
+    if d_restartProtectionTimer > 0 then
+    begin
+      d_restartProtectionTimer := d_restartProtectionTimer - ADeltaTime;
+
+      if d_restartProtectionTimer < 0 then
+        d_restartProtectionTimer := 0;
+    end;
+
+    d_survivalTime := d_survivalTime + ADeltaTime;
+
+    d_scoreUpdateTimer := d_scoreUpdateTimer + ADeltaTime;
+
+    if d_scoreUpdateTimer >= TGameConfig.SCORE_UPDATE_INTERVAL then
+    begin
+      d_scoreUpdateTimer := 0;
+
+      if Assigned(d_onScoreUpdate) then
+        d_onScoreUpdate(d_distanceMeters);
+    end;
+
+        // block collision
+    if (not d_collisionEnabled) or (d_restartProtectionTimer > 0) then
+      Exit;
+
+    // collision uses world position
+    // player is normally stored as screen position
+    // so we temporarily put player x into world position
+    playerPos := d_player.GetPosition;
+    d_player.SetPosition(TPointF.Create(d_worldPlayerX, playerPos.Y));
+
+    hitObstacle := d_obstacleManager.GetCollidingObstacle(d_player);
+
+    // put player back to screen position
+    d_player.SetPosition(playerPos);
+
+    if Assigned(hitObstacle) then
+    begin
+     if hitObstacle.GetKind = okPotato then
+      begin
+        targetY := (parentControl.Height / 2) - (d_imgPlayer.Height / 2);
+
+        d_player.StartJetpack(targetY);
+        d_obstacleManager.RemoveObstacle(hitObstacle);
+      end
+      else if hitObstacle.GetKind = okRedbull then
+      begin
+        d_player.StartSpeedBoost(TGameConfig.REDBULL_PLAYER_SPEED_MULTIPLIER);
+        d_obstacleManager.RemoveObstacle(hitObstacle);
+      end
+      else
+      begin
+        GameOver;
+        Exit;
+      end;
+    end;
+
+
+
+  except
+    on E: Exception do
+      TErrorHandler.ReportError('game update error: ' + E.Message);
+  end;
+end;
+
+procedure TGameEngine.Render;
+begin
+  if Assigned(d_renderer) then
+    d_renderer.Render(d_player, d_cameraX);
+end;
+
+
+procedure TGameEngine.UpdateRemotePlayer(const AName: string; const AX, AY: Single; const AState, AFrame: Integer; const AFacingRight: Boolean; const AAirTime: Single);
+begin
+  if not Assigned(d_remotePlayerRenderer) then
+    Exit;
+
+  d_remotePlayerRenderer.UpdateRemotePlayer(
+    AName,
+    AX,
+    AY,
+    AState,
+    AFrame,
+    AFacingRight,
+    AAirTime,
+    d_cameraX
+  );
+end;
+
+
+
+
+//setters getters
+
+procedure TGameEngine.SetOnScoreUpdate(const ACallback: TProc<Single>);
+begin
+  d_onScoreUpdate := ACallback;
+end;
+
+procedure TGameEngine.SetOnGameOver(const ACallback: TProc);
+begin
+  d_onGameOver := ACallback;
+end;
+
+procedure TGameEngine.ApplyObstacleSyncText(const AText: string);
+begin
+  TGameNetworkSync.ApplyObstacleSyncText(
+    AText,
+    d_obstacleManager,
+    d_assets
+  );
+end;
+
+function TGameEngine.GetPlayerSyncText(const APlayerName: string): string;
+begin
+  Result := TGameNetworkSync.GetPlayerSyncText(
+    APlayerName,
+    d_player,
+    d_worldPlayerX,
+    d_distanceMeters
+  );
+end;
+
+function TGameEngine.GetObstacleSyncText: string;
+begin
+  Result := TGameNetworkSync.GetObstacleSyncText(d_obstacleManager);
+end;
+
+procedure TGameEngine.SetCollisionEnabled(const AValue: Boolean);
+begin
+  d_collisionEnabled := AValue;
+end;
+
+procedure TGameEngine.SetHostMode(const AValue: Boolean);
+begin
+  try
+    // do nothing if the value did not change
+    if d_isHostMode = AValue then
+      Exit;
+
+    d_isHostMode := AValue;
+
+    // when this client becomes host, old remote obstacles must become normal moving obstacles
+    if d_isHostMode and Assigned(d_obstacleManager) then
+      d_obstacleManager.TakeOwnershipOfObstacles;
+  except
+    on E: Exception do
+      TErrorHandler.ReportError('set host mode error: ' + E.Message);
+  end;
+end;
+
+function TGameEngine.GetLastPlayerWorldX: Single;
+begin
+  Result := d_worldPlayerX;
+
+  if Assigned(d_remotePlayerRenderer) then
+    Result := d_remotePlayerRenderer.GetLastPlayerWorldX(d_worldPlayerX);
+end;
+
+function TGameEngine.GetFrontPlayerWorldX: Single;
+begin
+  Result := d_worldPlayerX;
+
+  if Assigned(d_remotePlayerRenderer) then
+    Result := d_remotePlayerRenderer.GetFrontPlayerWorldX(d_worldPlayerX);
+end;
+
+function TGameEngine.GetFrontPlayerSpeed(const ADeltaTime: Single): Single;
+var
+  FrontX: Single;
+begin
+  Result := 0;
+
+  try
+    if ADeltaTime <= 0 then
+      Exit;
+
+    FrontX := GetFrontPlayerWorldX;
+
+    // never use backwards movement for spawning
+    if FrontX <= d_lastFrontPlayerWorldX then
+      Exit;
+
+    // calculate forward speed of the front player
+    Result := (FrontX - d_lastFrontPlayerWorldX) / ADeltaTime;
+
+    // stop one big jump from spawning many obstacles after restart
+    Result := Min(Result, TGameConfig.MAX_FRONT_PLAYER_SPEED);
+
+    // save the highest known front position
+    d_lastFrontPlayerWorldX := FrontX;
+  except
+    on E: Exception do
+      TErrorHandler.ReportError('get front player speed error: ' + E.Message);
+  end;
+end;
+
+function TGameEngine.GetSafeSpawnBaseX(const AParentWidth: Single): Single;
+var
+  FrontX: Single;
+  WantedSpawnX: Single;
+begin
+  Result := d_obstacleSpawnWorldX;
+
+  try
+    FrontX := GetFrontPlayerWorldX;
+
+    // spawn must be in front of the front player
+    WantedSpawnX := FrontX + AParentWidth + TGameConfig.SPAWN_RIGHT_MARGIN;
+
+    // spawn line may only move to the right
+    if WantedSpawnX > d_obstacleSpawnWorldX then
+      d_obstacleSpawnWorldX := WantedSpawnX;
+
+    Result := d_obstacleSpawnWorldX;
+  except
+    on E: Exception do
+      TErrorHandler.ReportError('get safe spawn base x error: ' + E.Message);
+  end;
+end;
+
+end.

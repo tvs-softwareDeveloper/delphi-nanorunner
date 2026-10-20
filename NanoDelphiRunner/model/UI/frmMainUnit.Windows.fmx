@@ -1,0 +1,39 @@
+inherited frmMain_Windows: TfrmMain_Windows
+  ClientHeight = 432
+  ClientWidth = 501
+  DesignerMasterStyle = 0
+  inherited tcContent: TTabControl
+    Size.Width = 501.000000000000000000
+    Size.Height = 375.000000000000000000
+    Sizes = (
+      501s
+      349s
+      501s
+      349s
+      501s
+      349s)
+    inherited tabHome: TTabItem
+      Size.Width = 53.000000000000000000
+      ExplicitSize.cx = 53.000000000000000000
+      ExplicitSize.cy = 26.000000000000000000
+    end
+    inherited tabGame: TTabItem
+      ExplicitSize.cx = 51.000000000000000000
+      ExplicitSize.cy = 26.000000000000000000
+      inherited layGameContainer: TFrame1
+        Size.Width = 501.000000000000000000
+        Size.Height = 349.000000000000000000
+        inherited lblScore: TLabel
+          Size.Width = 451.000000000000000000
+        end
+      end
+    end
+    inherited TabLobby: TTabItem
+      ExplicitSize.cx = 69.000000000000000000
+      ExplicitSize.cy = 26.000000000000000000
+    end
+  end
+  inherited Panel1: TPanel
+    Size.Width = 501.000000000000000000
+  end
+end
